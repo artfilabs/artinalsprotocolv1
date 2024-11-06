@@ -5,7 +5,7 @@ compiled_package_info:
     artinals: "0000000000000000000000000000000000000000000000000000000000000000"
     std: "0000000000000000000000000000000000000000000000000000000000000001"
     sui: "0000000000000000000000000000000000000000000000000000000000000002"
-  source_digest: C16990446FD68C8214C98FC3DFFF44FC16E4F2FDCE6300D05733B20BF2FDAB20
+  source_digest: 756A22B8105F8ABD45D9ABD4EF11459128C190CF78ECD17E9B977C549AABAF39
   build_flags:
     dev_mode: false
     test_mode: false
@@ -14,7 +14,7 @@ compiled_package_info:
     force_recompilation: false
     lock_file: "./Move.lock"
     fetch_deps_only: false
-    skip_fetch_latest_git_deps: false
+    skip_fetch_latest_git_deps: true
     default_flavor: sui
     default_edition: ~
     deps_as_root: false
