@@ -5,13 +5,12 @@
  # mint_token:
 
 sui client call \
---package 0x08624d4bb2330b9dca356a4f70e818394b1c6c5eb32cd066ee8ae0669fadc47e \
---module ARTINALS \
+--package 0x98c44934a611649d9d6622bbb74dc0be5aeb1ec0f3aaff9d1de8a109ac819f1b \
+--module ART20 \
 --function mint_token \
 --args "TestToken" "This is a test NFT token." \ 2 10 \
-"https://akrd.net/_fcQKwSNjB7GL2fr_hdvdkv-RP_74abG9BO9DTig9bM" "https://amaranth-many-armadillo-855.mypinata.cloud/ipfs/QmS9eZM5nXaEyM7uie3az7xvmmmU6BzJ6suYEZPaFB1QWg" 500 true true true \
-0xa85c0349f4c5502b28bca13aa7efcc829ce0dc67aedb4469d51a04649bf72c39 \
-0x4b68a04aca6d4389735bbaf6067b0cd645129565581039b329148cac432d822f \
+"https://akrd.net/_fcQKwSNjB7GL2fr_hdvdkv-RP_74abG9BO9DTig9bM" "https://amaranth-many-armadillo-855.mypinata.cloud/ipfs/QmS9eZM5nXaEyM7uie3az7xvmmmU6BzJ6suYEZPaFB1QWg" true true \
+0xe60764b1bbfb6498566ffcfdef8b72e4537f47a23201b3afbf0159ec06fd78e9 \
 --gas-budget 100000000
 
 mint additional:

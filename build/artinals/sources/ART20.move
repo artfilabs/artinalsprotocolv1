@@ -26,11 +26,16 @@ module artinals::ART20 {
     const E_OVERFLOW: u64 = 18;
     const E_MAX_SUPPLY_EXCEEDED: u64 = 19;
     const E_MAX_BATCH_SIZE_EXCEEDED: u64 = 20;
+    const E_INVALID_NFT_AMOUNT: u64 = 21;
+    const E_INVALID_NFT: u64 = 22;
 
     // Add maximum limits
     const MAX_U64: u64 = 18446744073709551615;
     const MAX_SUPPLY: u64 = 1000000000; // 1 billion
     const MAX_BATCH_SIZE: u64 = 200;    // Maximum 100 NFTs per batch
+    const NFT_DECIMALS: u8 = 9;  // 9 decimal places
+    const NFT_PRECISION: u64 = 1000000000; // 10^9
+    const MIN_NFT_AMOUNT: u64 = 1000; // 0.000001 NFT minimum
 
 
 
@@ -48,6 +53,8 @@ module artinals::ART20 {
     is_mutable: bool,
     metadata_frozen: bool,
     collection_id: ID,
+    decimals: u8,        // Decimals
+    decimal_amount: u64,  // Amount with precision
 }
 
 
@@ -93,7 +100,8 @@ module artinals::ART20 {
 public struct UserBalance has key, store {
     id: UID,
     collection_id: ID,
-    balance: u64
+    balance: u64,           // Keep original balance
+    decimal_balance: u64    // Add decimal balance
 }
 
 
@@ -176,7 +184,13 @@ public struct BatchTransferEvent has copy, drop {
 }
 
 
-
+public struct NFTsCombined has copy, drop {
+    nft1_id: ID,
+    nft2_id: ID,
+    new_nft_id: ID,
+    combined_amount: u64,
+    timestamp: u64
+}
 
 
 fun safe_add(a: u64, b: u64): u64 {
@@ -281,6 +295,7 @@ fun safe_sub(a: u64, b: u64): u64 {
         logo_uri: url::new_unsafe_from_bytes(logo_uri),
         is_mutable,
         has_deny_list_authority,
+        
     };
 
     // Initialize deny list as dynamic field with mutable collection_cap
@@ -292,10 +307,13 @@ fun safe_sub(a: u64, b: u64): u64 {
 
     let collection_id = object::uid_to_inner(&collection_cap.id);
 
+    let decimal_initial_supply = to_decimal_amount(initial_supply);
+
     let user_balance = UserBalance {
         id: object::new(ctx),
         collection_id,
-        balance: initial_supply
+        balance: initial_supply,  // Keep original balance field
+        decimal_balance: decimal_initial_supply // Add decimal balance
     };
 
     let mut i = 0;
@@ -316,6 +334,8 @@ fun safe_sub(a: u64, b: u64): u64 {
             is_mutable,
             metadata_frozen: false,
             collection_id,
+            decimals: NFT_DECIMALS,
+            decimal_amount: NFT_PRECISION // 1.0 NFT
         };
 
         event::emit(NFTMintedEvent {
@@ -356,8 +376,11 @@ fun safe_sub(a: u64, b: u64): u64 {
     assert!(collection_cap.max_supply == 0 || collection_cap.current_supply + amount <= collection_cap.max_supply, 2);
     assert!(user_balance.collection_id == object::uid_to_inner(&collection_cap.id), 0);
     
-    user_balance.balance = user_balance.balance + amount;
+    let decimal_amount = to_decimal_amount(amount);
     let collection_id = object::uid_to_inner(&collection_cap.id);
+
+    user_balance.balance = user_balance.balance + amount;
+    user_balance.decimal_balance = user_balance.decimal_balance + decimal_amount;
 
     let mut i = 0;
     while (i < amount) {
@@ -377,6 +400,9 @@ fun safe_sub(a: u64, b: u64): u64 {
             is_mutable: collection_cap.is_mutable,
             metadata_frozen: false,
             collection_id,
+            decimals: NFT_DECIMALS,
+            decimal_amount: NFT_PRECISION,
+            
         };
 
         event::emit(TransferEvent {
@@ -645,14 +671,16 @@ public fun emit_deny_list_status(
     log_debug_event(b"Deny list checks passed", &token, sender, recipient);
 
     // Update sender's balance
-    assert!(sender_balance.collection_id == token_id, 0);
+    // Update balances
     sender_balance.balance = sender_balance.balance - 1;
+    sender_balance.decimal_balance = sender_balance.decimal_balance - token.decimal_amount;
 
     // Create recipient's balance
     let recipient_balance = UserBalance {
         id: object::new(ctx),
         collection_id: sender_balance.collection_id,
-        balance: 1
+        balance: 1,
+        decimal_balance: token.decimal_amount
     };
     transfer::transfer(recipient_balance, recipient);
 
@@ -731,7 +759,7 @@ fun log_debug_event(message: vector<u8>, token: &NFT, sender: address, recipient
     });
 }
 
-// Update batch_transfer_tokens
+// batch_transfer_tokens
 public entry fun batch_transfer_tokens(
     tokens: vector<NFT>,
     recipients: vector<address>,
@@ -739,92 +767,62 @@ public entry fun batch_transfer_tokens(
     sender_balance: &mut UserBalance,
     ctx: &mut TxContext
 ) {
-    // Get sender's address
     let sender = tx_context::sender(ctx);
     
-    // 1. Initial validations with safe checks
     let token_count = vector::length(&tokens);
     let recipient_count = vector::length(&recipients);
     
-    // Ensure vectors have matching lengths and are within limits
     assert!(token_count == recipient_count, E_INVALID_LENGTH);
     assert!(token_count <= MAX_BATCH_SIZE, E_MAX_BATCH_SIZE_EXCEEDED);
     assert!(token_count > 0, E_INVALID_BATCH_SIZE);
-    
-    // Ensure sender has sufficient balance with safe checks
     assert!(sender_balance.balance >= token_count, E_INSUFFICIENT_BALANCE);
     
-    // 2. Deny list checks for sender
     check_deny_list_restrictions(collection_cap, sender);
     
-    // 3. Prepare event data with safe initialization
     let mut token_ids = vector::empty<ID>();
     let mut amounts = vector::empty<u64>();
     let collection_id = object::uid_to_inner(&collection_cap.id);
     
-    // 4. Store a mutable copy of tokens vector
     let mut tokens_mut = tokens;
     
-    // 5. Process each transfer with safe operations
     let mut i = 0;
     while (i < recipient_count) {
-        // Get recipient and validate
         let recipient = *vector::borrow(&recipients, i);
-        
-        // Check deny list for recipient
         check_deny_list_restrictions(collection_cap, recipient);
         
-        // Get the token to transfer
         let token = vector::pop_back(&mut tokens_mut);
         
-        // Verify token belongs to the correct collection
         assert!(token.collection_id == collection_id, E_COLLECTION_MISMATCH);
         
-        // Create recipient balance if needed
         let recipient_balance = UserBalance {
             id: object::new(ctx),
             collection_id: token.collection_id,
-            balance: 1
+            balance: 1,
+            decimal_balance: token.decimal_amount
         };
         
-        // Store token ID for event tracking
-        vector::push_back(&mut token_ids, object::uid_to_inner(&token.id));
+        let token_id = object::uid_to_inner(&token.id);
+        vector::push_back(&mut token_ids, token_id);
         vector::push_back(&mut amounts, 1);
         
-        // Log transfer attempt
-        log_debug_event(
-            b"Processing batch transfer",
-            &token,
-            sender,
-            recipient
-        );
-        
-        // Emit individual transfer event
         event::emit(TransferEvent {
             from: sender,
             to: recipient,
-            id: object::uid_to_inner(&token.id),
+            id: token_id,
             amount: 1,
             royalty: 0,
             asset_id: token.asset_id,
         });
         
-        // Transfer balance and token to recipient
         transfer::transfer(recipient_balance, recipient);
         transfer::public_transfer(token, recipient);
         
-        // Safe increment
-        assert!(i < MAX_U64, E_OVERFLOW);
         i = i + 1;
     };
     
-    // 6. Update sender's balance with safe arithmetic
     sender_balance.balance = safe_sub(sender_balance.balance, token_count);
-    
-    // 7. Clean up the empty vector
     vector::destroy_empty(tokens_mut);
     
-    // 8. Emit batch transfer event
     event::emit(BatchTransferEvent {
         from: sender,
         recipients: recipients,
@@ -835,7 +833,6 @@ public entry fun batch_transfer_tokens(
     });
 }
 
-
     // Batch transfer function
    public entry fun batch_burn_tokens(
     tokens: vector<NFT>,
@@ -845,21 +842,16 @@ public entry fun batch_transfer_tokens(
 ) {
     let count = vector::length(&tokens);
     assert!(count <= MAX_BATCH_SIZE, E_MAX_BATCH_SIZE_EXCEEDED);
-
-    // Safe balance checks
     assert!(user_balance.balance >= count, E_INSUFFICIENT_BALANCE);
     assert!(collection_cap.current_supply >= count, E_NO_TOKENS_TO_BURN);
 
     let mut tokens_mut = tokens;
     let n = vector::length(&tokens_mut);
-
-    
     
     let mut i = 0;
     while (i < n) {
         let token = vector::pop_back(&mut tokens_mut);
         
-        // Check if the token belongs to the correct collection and user balance
         assert!(user_balance.collection_id == token.collection_id, 0);
         assert!(object::uid_to_inner(&collection_cap.id) == token.collection_id, 0);
         
@@ -867,7 +859,6 @@ public entry fun batch_transfer_tokens(
         i = i + 1;
     };
 
-    // Destroy the empty vector
     vector::destroy_empty(tokens_mut);
 }
 
@@ -887,6 +878,7 @@ public entry fun batch_transfer_tokens(
     
     // Safe balance updates
     user_balance.balance = safe_sub(user_balance.balance, 1);
+    user_balance.decimal_balance = safe_decimal_sub(user_balance.decimal_balance, token.decimal_amount);
     collection_cap.current_supply = safe_sub(collection_cap.current_supply, 1);
     
     event::emit(BurnEvent {
@@ -895,9 +887,10 @@ public entry fun batch_transfer_tokens(
         amount: 1,
     });
     
+    // Match the exact field order of NFT struct definition
     let NFT { 
         id, 
-        artinals_id: _, 
+        artinals_id: _,
         creator: _, 
         name: _, 
         description: _, 
@@ -907,7 +900,9 @@ public entry fun batch_transfer_tokens(
         max_supply: _, 
         is_mutable: _, 
         metadata_frozen: _, 
-        collection_id: _ 
+        collection_id: _,
+        decimals: _,      // Add this in exact order
+        decimal_amount: _ // Add this in exact order
     } = token;
     
     object::delete(id);
@@ -984,84 +979,64 @@ public entry fun transfer_existing_nfts_by_quantity(
     sender_balance: &mut UserBalance,
     ctx: &mut TxContext
 ) {
-    // Get sender address
     let sender = tx_context::sender(ctx);
-    
-    // Use helper function for deny list validation
     validate_transfer(collection_cap, sender, recipient);
     
-    // Log validation event
-    log_debug_event(
-        b"Deny list validation passed",
-        vector::borrow(&tokens, 0),
-        sender,
-        recipient
-    );
-    
-    // Ensure that the sender has enough NFTs to transfer
     let sender_nft_count = vector::length(&tokens);
     assert!(sender_nft_count >= quantity, E_NO_TOKENS_TO_BURN);
 
-    // Create recipient balance object
+    let mut total_decimal_amount = 0u64;
+    let mut i = 0;
+    while (i < quantity) {
+        let token = vector::borrow(&tokens, i);
+        total_decimal_amount = total_decimal_amount + token.decimal_amount;
+        i = i + 1;
+    };
+
     let recipient_balance = UserBalance {
         id: object::new(ctx),
         collection_id: sender_balance.collection_id,
-        balance: quantity
+        balance: quantity,
+        decimal_balance: total_decimal_amount
     };
 
-    // Update sender's balance
     sender_balance.balance = sender_balance.balance - quantity;
+    sender_balance.decimal_balance = sender_balance.decimal_balance - total_decimal_amount;
 
-    // Transfer balance object to recipient
     transfer::transfer(recipient_balance, recipient);
 
-    // Prepare event data
     let mut token_ids = vector::empty<ID>();
     let mut amounts = vector::empty<u64>();
     let collection_id = object::uid_to_inner(&collection_cap.id);
 
-    let mut i = 0;
+    i = 0;
     while (i < quantity) {
         let token = vector::pop_back(&mut tokens);
         
-        // Verify token belongs to the same collection
         assert!(
             collection_id == token.collection_id,
             E_COLLECTION_MISMATCH
         );
 
-        // Store IDs for batch event
-        vector::push_back(&mut token_ids, object::uid_to_inner(&token.id));
+        let token_id = object::uid_to_inner(&token.id);
+        vector::push_back(&mut token_ids, token_id);
         vector::push_back(&mut amounts, 1);
 
-        // Emit individual transfer event
         event::emit(TransferEvent {
-    from: sender,
-    to: recipient,
-    id: object::uid_to_inner(&token.id),
-    amount: 1,
-    royalty: 0,  // Set to 0 since we removed royalties
-    asset_id: token.asset_id,
-    });
+            from: sender,
+            to: recipient,
+            id: token_id,
+            amount: 1,
+            royalty: 0,
+            asset_id: token.asset_id,
+        });
 
-        // Log transfer attempt
-        log_debug_event(
-            b"Batch transfer token attempt",
-            &token,
-            sender,
-            recipient
-        );
-
-        // Transfer the NFT to the recipient
         transfer::public_transfer(token, recipient);
-
         i = i + 1;
     };
 
-    // Clean up the empty vector
     vector::destroy_empty(tokens);
 
-    // Emit batch transfer event
     event::emit(BatchTransferEvent {
         from: sender,
         recipients: vector[recipient],
@@ -1070,7 +1045,159 @@ public entry fun transfer_existing_nfts_by_quantity(
         collection_id,
         timestamp: tx_context::epoch(ctx)
     });
+}
 
+public entry fun transfer_token_amount(
+    token: &mut NFT,
+    amount: u64,
+    recipient: address,
+    collection_cap: &CollectionCap,
+    sender_balance: &mut UserBalance,
+    ctx: &mut TxContext
+) {
+    let sender = tx_context::sender(ctx);
+    
+    // Validate transfer
+    check_deny_list_restrictions(collection_cap, sender);
+    check_deny_list_restrictions(collection_cap, recipient);
+    
+    // Validate amount
+    assert!(amount >= MIN_NFT_AMOUNT, E_INVALID_NFT_AMOUNT);
+    assert!(amount <= token.decimal_amount, E_INSUFFICIENT_BALANCE);
+    
+    // Create new NFT with specified amount
+    let new_nft = NFT {
+        id: object::new(ctx),
+        artinals_id: token.artinals_id,
+        creator: token.creator,
+        name: token.name,
+        description: token.description,
+        uri: token.uri,
+        logo_uri: token.logo_uri,
+        asset_id: token.asset_id,
+        max_supply: token.max_supply,
+        is_mutable: token.is_mutable,
+        metadata_frozen: token.metadata_frozen,
+        collection_id: token.collection_id,
+        decimals: token.decimals,
+        decimal_amount: amount
+    };
+    
+    sender_balance.balance = safe_sub(sender_balance.balance, 1);
+    sender_balance.decimal_balance = safe_decimal_sub(sender_balance.decimal_balance, amount);
+    
+    // Create recipient balance
+    let recipient_balance = UserBalance {
+        id: object::new(ctx),
+        collection_id: token.collection_id,
+        balance: 1,
+        decimal_balance: amount
+    };
+    
+    // Emit transfer event
+    event::emit(TransferEvent {
+        from: sender,
+        to: recipient,
+        id: object::uid_to_inner(&new_nft.id),
+        amount,
+        royalty: 0,
+        asset_id: token.asset_id
+    });
+    
+    // Transfer NFT and balance
+    transfer::public_transfer(new_nft, recipient);
+    transfer::transfer(recipient_balance, recipient);
+}
+
+public entry fun combine_and_transfer_nfts(
+    nft1: NFT,
+    nft2: NFT,
+    ctx: &mut TxContext
+) {
+    let nft1_id = object::uid_to_inner(&nft1.id);
+    let nft2_id = object::uid_to_inner(&nft2.id);
+    
+    let combined = combine_nfts(nft1, nft2, ctx);
+    let new_nft_id = object::uid_to_inner(&combined.id);
+    
+    event::emit(NFTsCombined {
+        nft1_id,
+        nft2_id,
+        new_nft_id,
+        combined_amount: combined.decimal_amount,
+        timestamp: tx_context::epoch(ctx)
+    });
+    
+    transfer::public_transfer(combined, tx_context::sender(ctx));
+}
+
+public fun combine_nfts(
+    nft1: NFT,
+    nft2: NFT,
+    ctx: &mut TxContext
+): NFT {
+    assert!(nft1.artinals_id == nft2.artinals_id, E_INVALID_NFT);
+    assert!(nft1.collection_id == nft2.collection_id, E_COLLECTION_MISMATCH);
+    
+    // Get the amounts before destruction
+    let combined_amount = safe_decimal_add(nft1.decimal_amount, nft2.decimal_amount);
+    
+    // Delete the IDs of both input NFTs
+    let NFT { 
+        id: id1,
+        artinals_id,
+        creator,
+        name,
+        description,
+        uri,
+        logo_uri,
+        asset_id,
+        max_supply,
+        is_mutable,
+        metadata_frozen,
+        collection_id,
+        decimals,
+        decimal_amount: _ // Just ignore the amount since we already have it
+    } = nft1;
+
+    let NFT { 
+        id: id2,
+        artinals_id: _,
+        creator: _,
+        name: _,
+        description: _,
+        uri: _,
+        logo_uri: _,
+        asset_id: _,
+        max_supply: _,
+        is_mutable: _,
+        metadata_frozen: _,
+        collection_id: _,
+        decimals: _,
+        decimal_amount: _ // Just ignore the amount since we already have it
+    } = nft2;
+
+    // Delete the old UIDs
+    object::delete(id1);
+    object::delete(id2);
+    
+    // Create new NFT with combined amount
+    NFT {
+        id: object::new(ctx),
+        artinals_id,
+        creator,
+        name,
+        description,
+        uri,
+        logo_uri,
+        asset_id,
+        max_supply,
+        is_mutable,
+        metadata_frozen,
+        collection_id,
+        decimals,
+        decimal_amount: combined_amount
+    }
 }
 
 public fun get_user_balance(user_balance: &UserBalance): u64 {
@@ -1078,16 +1205,17 @@ public fun get_user_balance(user_balance: &UserBalance): u64 {
 }
 
 public fun create_user_balance(
-        collection_id: ID,
-        balance: u64,
-        ctx: &mut TxContext
-    ): UserBalance {
-        UserBalance {
-            id: object::new(ctx),
-            collection_id,
-            balance
-        }
+    collection_id: ID,
+    balance: u64,
+    ctx: &mut TxContext
+): UserBalance {
+    UserBalance {
+        id: object::new(ctx),
+        collection_id,
+        balance,
+        decimal_balance: to_decimal_amount(balance)
     }
+}
 
 // View functions
 
@@ -1150,5 +1278,44 @@ public fun get_collection_id(nft: &NFT): ID {
     public fun get_nft_id(nft: &NFT): ID {
         object::uid_to_inner(&nft.id)
     }
+
+    // Decimal helper functions
+public fun to_decimal_amount(whole_units: u64): u64 {
+    whole_units * NFT_PRECISION
+}
+
+public fun from_decimal_amount(decimal_amount: u64): u64 {
+    decimal_amount / NFT_PRECISION
+}
+
+// Format decimal amount
+public fun format_decimal_amount(amount: u64): (u64, u64) {
+    let whole = amount / NFT_PRECISION;
+    let decimal = amount % NFT_PRECISION;
+    (whole, decimal)
+}
+
+// Safe decimal arithmetic
+fun safe_decimal_add(a: u64, b: u64): u64 {
+    assert!(a <= MAX_U64 - b, E_OVERFLOW);
+    a + b
+}
+
+fun safe_decimal_sub(a: u64, b: u64): u64 {
+    assert!(a >= b, E_INSUFFICIENT_BALANCE);
+    a - b
+}
+
+public fun get_decimal_amount(nft: &NFT): u64 {
+    nft.decimal_amount
+}
+
+public fun get_formatted_amount(nft: &NFT): (u64, u64) {
+    format_decimal_amount(nft.decimal_amount)
+}
+
+public fun get_decimal_balance(balance: &UserBalance): u64 {
+    balance.decimal_balance
+}
 
 }
