@@ -1,16 +1,16 @@
  sui move build
- sui client publish --gas-budget 100000000 --skip-dependency-verification
+ sui client publish --gas-budget 1000000000 --skip-dependency-verification
  
  
  # mint_token:
 
 sui client call \
---package 0x98c44934a611649d9d6622bbb74dc0be5aeb1ec0f3aaff9d1de8a109ac819f1b \
+--package 0xf56f5d9a60d6d87b1b9b2278c46146429b9b4bee10889894ddb913296ef1d67a \
 --module ART20 \
 --function mint_token \
---args "TestToken" "This is a test NFT token." \ 2 10 \
+--args "TestToken" "This is a test NFT token." \ 10 20 \
 "https://akrd.net/_fcQKwSNjB7GL2fr_hdvdkv-RP_74abG9BO9DTig9bM" "https://amaranth-many-armadillo-855.mypinata.cloud/ipfs/QmS9eZM5nXaEyM7uie3az7xvmmmU6BzJ6suYEZPaFB1QWg" true true \
-0xe60764b1bbfb6498566ffcfdef8b72e4537f47a23201b3afbf0159ec06fd78e9 \
+0x1b28a38a5cc55d34626878abb268c9fa409994efc2d540e8a37ab0a43e6b87f0 \
 --gas-budget 100000000
 
 mint additional:
@@ -28,10 +28,45 @@ sui client call --package 0x0886ff037a5ca8e32159b3bd5c311baa7d34821685c3d5ffa6ab
 
 
    sui client call \
-    --package 0x0758ecf9e64aa935f755ead7ab64885f3e54a379dc6a4f0a16309af30f905558 \
+    --package 0x3971a81c13cd364755383403bf62ae0a46d29d3d707281e95954cd2679f51808 \
+    --module ART20 \
+    --function transfer_token \
+    --args 0x06ca5f6e686157cfd1fb3dcb48b1368db0ae72520189b5ef614ede646e91c0ff \
+           0xa85c0349f4c5502b28bca13aa7efcc829ce0dc67aedb4469d51a04649bf72c39 \
+           0xa15cbe63b2d735caac8133d890f67dce2ea68de5f5c14ad0158604891a2de3ab \
+           0x9c56dd433f332fc078c4415256f133ec047a20bcc2aeec4c66c0c198b0b32a9b \
+    --gas-budget 100000000
+
+
+   sui client call \
+    --package 0xf56f5d9a60d6d87b1b9b2278c46146429b9b4bee10889894ddb913296ef1d67a \
+    --module ART20 \
+    --function transfer_existing_nfts_by_quantity \
+    --args '[0x5433f90b276ca75ed2e875cdaa29d24cb6f95d20cf5ee9b867dace907dbf481e]' \
+           0x081520a256f76dba3e50a5feaa94c312587674094af5b775726cfb3aec6742f9 \
+           1 \
+           0x3b1d3f04a264f8a446106bbf8bc3bb842d9458f59d263cd9b32f58edf4230444 \
+           '[0x5a4846cf6c7eed1d1174844df9416aa10c4b84a9b00d60b3bf11f6d1cdb141c0]' \
+    --gas-budget 100000000
+
+
+    sui client call \
+    --package 0xf56f5d9a60d6d87b1b9b2278c46146429b9b4bee10889894ddb913296ef1d67a \
+    --module ART20 \
+    --function burn_token \
+    --args 0xc3ce1b881fea79ef40501d6d0bca389737af8248a764317ca6d11315d857c490 \
+           0x3b1d3f04a264f8a446106bbf8bc3bb842d9458f59d263cd9b32f58edf4230444 \
+           '[0x008b66b705dbb0993c44aa35d4c41c1c007e6d540b985b3185e1c6f2fe81f48b]' \
+    --gas-budget 100000000
+
+
+    sui client call \
+    --package 0xec680e1ef79a1d0e8f0d578d6226651e383c310b9dd2f2eb436213027168829f \
     --module ARTINALS \
     --function transfer_token \
-    --args 0x76c247617e80bd7c9f2192ad3d819d7c0a6a7bcb3ff8d1984bc2a86861cab25d \
+    --args 0x29d413552538605a90377d6fbe49147c078480db1deae4ba337d293730afc95d \
+           0xa85c0349f4c5502b28bca13aa7efcc829ce0dc67aedb4469d51a04649bf72c39 \
+           0xdc20f0a3ec9aa4a373c42a83114be66f932549bb7a1217b3deb5fef7dd5282c3 \
            0x9667587da0924b4c48c5c466fb728bf5c9f3b11a938cf877a148652a95aa14e5 \
     --gas-budget 100000000
 
@@ -53,4 +88,4 @@ sui client call \
 
 upgrade:
 
-sui client upgrade --upgrade-capability 0xdeebbd286174ce5a9371e5da6de4d2de025ed4091340e1ede7f1c95bb4933390 --gas-budget 1000000000 --skip-dependency-verification
+sui client upgrade --upgrade-capability 0xd854645b054372bea0c43321143da0e5a49f47ad9b0e4be5c708c63845db6d7b --gas-budget 1000000000 --skip-dependency-verification

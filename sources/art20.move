@@ -339,7 +339,7 @@ fun safe_sub(a: u64, b: u64): u64 {
         i = i + 1;
     };
 
-    transfer::transfer(collection_cap, tx_context::sender(ctx));
+    transfer::share_object(collection_cap);
     transfer::transfer(user_balance, tx_context::sender(ctx));
 }
 
@@ -352,7 +352,7 @@ fun safe_sub(a: u64, b: u64): u64 {
     user_balance: &mut UserBalance,
     ctx: &mut TxContext
 ) {
-    assert!(tx_context::sender(ctx) == collection_cap.creator, 1);
+    assert!(tx_context::sender(ctx) == collection_cap.creator, 2);
     assert!(collection_cap.max_supply == 0 || collection_cap.current_supply + amount <= collection_cap.max_supply, 2);
     assert!(user_balance.collection_id == object::uid_to_inner(&collection_cap.id), 0);
     
@@ -469,7 +469,7 @@ public fun update_metadata(
     new_logo_uri: vector<u8>, // Change this to vector<u8>
     ctx: &mut TxContext
 ) {
-    assert!(tx_context::sender(ctx) == token.creator, 1); // Only creator can update
+    assert!(tx_context::sender(ctx) == token.creator, 2); // Only creator can update
     assert!(token.is_mutable, 2); // Token must be mutable
     assert!(!token.metadata_frozen, 3); // Metadata must not be frozen
 
@@ -733,73 +733,76 @@ fun log_debug_event(message: vector<u8>, token: &NFT, sender: address, recipient
 
 // Update batch_transfer_tokens
 public entry fun batch_transfer_tokens(
-    tokens: vector<NFT>,
+    mut tokens: vector<NFT>,
     recipients: vector<address>,
     collection_cap: &CollectionCap,
-    sender_balance: &mut UserBalance,
+    mut sender_balances: vector<UserBalance>,
     ctx: &mut TxContext
 ) {
-    // Get sender's address
     let sender = tx_context::sender(ctx);
-    
-    // 1. Initial validations with safe checks
     let token_count = vector::length(&tokens);
     let recipient_count = vector::length(&recipients);
     
-    // Ensure vectors have matching lengths and are within limits
+    // Validate batch parameters
     assert!(token_count == recipient_count, E_INVALID_LENGTH);
     assert!(token_count <= MAX_BATCH_SIZE, E_MAX_BATCH_SIZE_EXCEEDED);
     assert!(token_count > 0, E_INVALID_BATCH_SIZE);
     
-    // Ensure sender has sufficient balance with safe checks
-    assert!(sender_balance.balance >= token_count, E_INSUFFICIENT_BALANCE);
+    // Calculate total available balance
+    let mut total_available = 0u64;
+    let mut i = 0;
+    let n = vector::length(&sender_balances);
+    while (i < n) {
+        let balance = vector::borrow(&sender_balances, i);
+        total_available = safe_add(total_available, balance.balance);
+        i = i + 1;
+    };
     
-    // 2. Deny list checks for sender
+    // Verify sufficient total balance
+    assert!(total_available >= token_count, E_INSUFFICIENT_BALANCE);
+    
+    // Check deny list for sender
     check_deny_list_restrictions(collection_cap, sender);
     
-    // 3. Prepare event data with safe initialization
+    // Prepare event data
     let mut token_ids = vector::empty<ID>();
     let mut amounts = vector::empty<u64>();
     let collection_id = object::uid_to_inner(&collection_cap.id);
     
-    // 4. Store a mutable copy of tokens vector
-    let mut tokens_mut = tokens;
-    
-    // 5. Process each transfer with safe operations
+    // Process each recipient
     let mut i = 0;
     while (i < recipient_count) {
-        // Get recipient and validate
         let recipient = *vector::borrow(&recipients, i);
-        
-        // Check deny list for recipient
         check_deny_list_restrictions(collection_cap, recipient);
         
-        // Get the token to transfer
-        let token = vector::pop_back(&mut tokens_mut);
-        
-        // Verify token belongs to the correct collection
-        assert!(token.collection_id == collection_id, E_COLLECTION_MISMATCH);
-        
-        // Create recipient balance if needed
+        // Create recipient balance
         let recipient_balance = UserBalance {
             id: object::new(ctx),
-            collection_id: token.collection_id,
+            collection_id,
             balance: 1
         };
         
-        // Store token ID for event tracking
+        // Pop token from tokens vector
+        let token = vector::pop_back(&mut tokens);
+        assert!(token.collection_id == collection_id, E_COLLECTION_MISMATCH);
+        
+        // Update sender balances
+        let mut balance_updated = false;
+        let mut j = 0;
+        while (j < vector::length(&sender_balances)) {
+            let balance = vector::borrow_mut(&mut sender_balances, j);
+            if (balance.balance > 0) {
+                balance.balance = safe_sub(balance.balance, 1);
+                balance_updated = true;
+                break
+            };
+            j = j + 1;
+        };
+        assert!(balance_updated, E_INSUFFICIENT_BALANCE);
+        
+        // Emit transfer event
         vector::push_back(&mut token_ids, object::uid_to_inner(&token.id));
         vector::push_back(&mut amounts, 1);
-        
-        // Log transfer attempt
-        log_debug_event(
-            b"Processing batch transfer",
-            &token,
-            sender,
-            recipient
-        );
-        
-        // Emit individual transfer event
         event::emit(TransferEvent {
             from: sender,
             to: recipient,
@@ -809,25 +812,34 @@ public entry fun batch_transfer_tokens(
             asset_id: token.asset_id,
         });
         
-        // Transfer balance and token to recipient
-        transfer::transfer(recipient_balance, recipient);
+        // Transfer token and recipient balance
         transfer::public_transfer(token, recipient);
+        transfer::transfer(recipient_balance, recipient);
         
-        // Safe increment
-        assert!(i < MAX_U64, E_OVERFLOW);
         i = i + 1;
     };
     
-    // 6. Update sender's balance with safe arithmetic
-    sender_balance.balance = safe_sub(sender_balance.balance, token_count);
+    // Transfer remaining balances back to sender and delete empty ones
+    let j = 0;
+    while (j < vector::length(&sender_balances)) {
+        let balance = vector::remove(&mut sender_balances, 0);
+        if (balance.balance > 0) {
+            transfer::transfer(balance, sender);
+        } else {
+            let UserBalance { id, .. } = balance;
+            object::delete(id);
+        }
+        // Note: Since we're removing from index 0, the vector shrinks, so we don't increment j
+    };
     
-    // 7. Clean up the empty vector
-    vector::destroy_empty(tokens_mut);
+    // Clean up vectors
+    vector::destroy_empty(tokens);
+    vector::destroy_empty(sender_balances);
     
-    // 8. Emit batch transfer event
+    // Emit batch event
     event::emit(BatchTransferEvent {
         from: sender,
-        recipients: recipients,
+        recipients,
         token_ids,
         amounts,
         collection_id,
@@ -836,57 +848,58 @@ public entry fun batch_transfer_tokens(
 }
 
 
-    // Batch transfer function
-   public entry fun batch_burn_tokens(
-    tokens: vector<NFT>,
-    collection_cap: &mut CollectionCap,
-    user_balance: &mut UserBalance,
-    ctx: &mut TxContext
-) {
-    let count = vector::length(&tokens);
-    assert!(count <= MAX_BATCH_SIZE, E_MAX_BATCH_SIZE_EXCEEDED);
-
-    // Safe balance checks
-    assert!(user_balance.balance >= count, E_INSUFFICIENT_BALANCE);
-    assert!(collection_cap.current_supply >= count, E_NO_TOKENS_TO_BURN);
-
-    let mut tokens_mut = tokens;
-    let n = vector::length(&tokens_mut);
-
-    
-    
-    let mut i = 0;
-    while (i < n) {
-        let token = vector::pop_back(&mut tokens_mut);
-        
-        // Check if the token belongs to the correct collection and user balance
-        assert!(user_balance.collection_id == token.collection_id, 0);
-        assert!(object::uid_to_inner(&collection_cap.id) == token.collection_id, 0);
-        
-        burn_token(token, collection_cap, user_balance, ctx);
-        i = i + 1;
-    };
-
-    // Destroy the empty vector
-    vector::destroy_empty(tokens_mut);
-}
-
-
-    // Burn a token
-    public entry fun burn_token(
+// Modified burn_token to handle multiple balances
+public entry fun burn_token(
     token: NFT,
     collection_cap: &mut CollectionCap,
-    user_balance: &mut UserBalance,
+    user_balances: vector<UserBalance>,
     ctx: &mut TxContext
 ) {
     let sender = tx_context::sender(ctx);
-    
     assert!(sender == token.creator, E_NOT_OWNER);
     assert!(collection_cap.current_supply > 0, E_NO_TOKENS_TO_BURN);
-    assert!(user_balance.collection_id == token.collection_id, 0);
     
-    // Safe balance updates
-    user_balance.balance = safe_sub(user_balance.balance, 1);
+    // Find and update appropriate balance
+    let mut balances_mut = user_balances;
+    let mut found = false;
+    let mut used_balances = vector::empty<UserBalance>();
+    
+    while (!vector::is_empty(&balances_mut)) {
+        let mut balance = vector::pop_back(&mut balances_mut);
+        assert!(balance.collection_id == token.collection_id, 0);
+        
+        if (!found && balance.balance > 0) {
+            if (balance.balance == 1) {
+                let UserBalance { id, collection_id: _, balance: _ } = balance;
+                object::delete(id);
+            } else {
+                balance.balance = balance.balance - 1;
+                vector::push_back(&mut used_balances, balance);
+            };
+            found = true;
+        } else {
+            vector::push_back(&mut used_balances, balance);
+        }
+    };
+    
+    assert!(found, E_INSUFFICIENT_BALANCE);
+    
+    // Return remaining balances
+    while (!vector::is_empty(&used_balances)) {
+        let balance = vector::pop_back(&mut used_balances);
+        if (balance.balance > 0) {
+            transfer::transfer(balance, sender);
+        } else {
+            let UserBalance { id, collection_id: _, balance: _ } = balance;
+            object::delete(id);
+        }
+    };
+    
+    // Clean up balance vectors
+    vector::destroy_empty(balances_mut);
+    vector::destroy_empty(used_balances);
+    
+    // Burn the token
     collection_cap.current_supply = safe_sub(collection_cap.current_supply, 1);
     
     event::emit(BurnEvent {
@@ -914,6 +927,107 @@ public entry fun batch_transfer_tokens(
 }
 
 
+    // Batch transfer function
+   public entry fun batch_burn_tokens(
+    mut tokens: vector<NFT>,
+    collection_cap: &mut CollectionCap,
+    mut user_balances: vector<UserBalance>,
+    ctx: &mut TxContext
+) {
+    let count = vector::length(&tokens);
+    assert!(count <= MAX_BATCH_SIZE, E_MAX_BATCH_SIZE_EXCEEDED);
+
+    // Calculate total balance
+    let mut total_available = 0u64;
+    let mut i = 0;
+    let n = vector::length(&user_balances);
+    while (i < n) {
+        let balance = vector::borrow(&user_balances, i);
+        total_available = safe_add(total_available, balance.balance);
+        i = i + 1;
+    };
+    assert!(total_available >= count, E_INSUFFICIENT_BALANCE);
+    assert!(collection_cap.current_supply >= count, E_NO_TOKENS_TO_BURN);
+
+    let sender = tx_context::sender(ctx);
+    let mut i = 0;
+    while (i < count) {
+        let token = vector::pop_back(&mut tokens);
+
+        // Verify token belongs to collection
+        assert!(token.collection_id == object::uid_to_inner(&collection_cap.id), E_COLLECTION_MISMATCH);
+
+        // Decrement balance
+        let mut balance_updated = false;
+        let mut j = 0;
+        while (j < vector::length(&user_balances)) {
+            let balance = vector::borrow_mut(&mut user_balances, j);
+            if (balance.balance > 0 && balance.collection_id == token.collection_id) {
+                balance.balance = safe_sub(balance.balance, 1);
+                balance_updated = true;
+                break
+            };
+            j = j + 1;
+        };
+        assert!(balance_updated, E_INSUFFICIENT_BALANCE);
+
+        // Burn the token
+        burn_single_token(token, collection_cap, ctx);
+
+        i = i + 1;
+    };
+
+    // Transfer remaining balances back to sender and delete empty ones
+    let j = 0;
+    while (j < vector::length(&user_balances)) {
+        let balance = vector::remove(&mut user_balances, 0);
+        if (balance.balance > 0) {
+            transfer::transfer(balance, sender);
+        } else {
+            let UserBalance { id, .. } = balance;
+            object::delete(id);
+        }
+        // No need to increment j since vector shrinks
+    };
+
+    // Clean up vectors
+    vector::destroy_empty(tokens);
+    vector::destroy_empty(user_balances);
+}
+
+
+fun burn_single_token(
+    token: NFT,
+    collection_cap: &mut CollectionCap,
+    ctx: &TxContext
+) {
+    let sender = tx_context::sender(ctx);
+    
+    collection_cap.current_supply = safe_sub(collection_cap.current_supply, 1);
+    
+    event::emit(BurnEvent {
+        owner: sender,
+        id: object::uid_to_inner(&token.id),
+        amount: 1,
+    });
+    
+    let NFT { 
+        id, 
+        artinals_id: _, 
+        creator: _, 
+        name: _, 
+        description: _, 
+        uri: _, 
+        logo_uri: _, 
+        asset_id: _, 
+        max_supply: _, 
+        is_mutable: _, 
+        metadata_frozen: _, 
+        collection_id: _ 
+    } = token;
+    
+    object::delete(id);
+}
 
     public fun get_current_supply(cap: &CollectionCap): u64 {
     cap.current_supply
@@ -981,87 +1095,112 @@ public entry fun transfer_existing_nfts_by_quantity(
     recipient: address, 
     quantity: u64, 
     collection_cap: &CollectionCap,
-    sender_balance: &mut UserBalance,
+    sender_balances: vector<UserBalance>,
     ctx: &mut TxContext
 ) {
-    // Get sender address
     let sender = tx_context::sender(ctx);
-    
-    // Use helper function for deny list validation
     validate_transfer(collection_cap, sender, recipient);
     
-    // Log validation event
-    log_debug_event(
-        b"Deny list validation passed",
-        vector::borrow(&tokens, 0),
-        sender,
-        recipient
-    );
-    
-    // Ensure that the sender has enough NFTs to transfer
     let sender_nft_count = vector::length(&tokens);
     assert!(sender_nft_count >= quantity, E_NO_TOKENS_TO_BURN);
-
-    // Create recipient balance object
+    
+    // Calculate total available balance
+    let mut total_available = 0u64;
+    let mut i = 0;
+    let n = vector::length(&sender_balances);
+    while (i < n) {
+        let balance = vector::borrow(&sender_balances, i);
+        total_available = safe_add(total_available, balance.balance);
+        i = i + 1;
+    };
+    
+    assert!(total_available >= quantity, E_INSUFFICIENT_BALANCE);
+    
+    // Create recipient balance
     let recipient_balance = UserBalance {
         id: object::new(ctx),
-        collection_id: sender_balance.collection_id,
+        collection_id: object::uid_to_inner(&collection_cap.id),
         balance: quantity
     };
-
-    // Update sender's balance
-    sender_balance.balance = sender_balance.balance - quantity;
-
-    // Transfer balance object to recipient
+    
+    // Process sender balances
+    let mut sender_balances_mut = sender_balances;
+    let mut remaining_quantity = quantity;
+    let mut used_balances = vector::empty<UserBalance>();
+    
+    while (remaining_quantity > 0) {
+        let mut balance = vector::pop_back(&mut sender_balances_mut);
+        
+        if (balance.balance <= remaining_quantity) {
+            // Use entire balance
+            remaining_quantity = remaining_quantity - balance.balance;
+            let UserBalance { id, collection_id: _, balance: _ } = balance;
+            object::delete(id);
+        } else {
+            // Use partial balance
+            balance.balance = balance.balance - remaining_quantity;
+            remaining_quantity = 0;
+            vector::push_back(&mut used_balances, balance);
+        };
+    };
+    
+    // Return remaining balances
+    while (!vector::is_empty(&sender_balances_mut)) {
+        let balance = vector::pop_back(&mut sender_balances_mut);
+        vector::push_back(&mut used_balances, balance);
+    };
+    
+    // Transfer updated balances back
+    while (!vector::is_empty(&used_balances)) {
+        let balance = vector::pop_back(&mut used_balances);
+        if (balance.balance > 0) {
+            transfer::transfer(balance, sender);
+        } else {
+            let UserBalance { id, collection_id: _, balance: _ } = balance;
+            object::delete(id);
+        }
+    };
+    
+    // Transfer recipient balance
     transfer::transfer(recipient_balance, recipient);
-
-    // Prepare event data
+    
+    // Handle NFT transfers
     let mut token_ids = vector::empty<ID>();
     let mut amounts = vector::empty<u64>();
     let collection_id = object::uid_to_inner(&collection_cap.id);
-
+    
     let mut i = 0;
     while (i < quantity) {
         let token = vector::pop_back(&mut tokens);
+        assert!(collection_id == token.collection_id, E_COLLECTION_MISMATCH);
         
-        // Verify token belongs to the same collection
-        assert!(
-            collection_id == token.collection_id,
-            E_COLLECTION_MISMATCH
-        );
-
-        // Store IDs for batch event
         vector::push_back(&mut token_ids, object::uid_to_inner(&token.id));
         vector::push_back(&mut amounts, 1);
-
-        // Emit individual transfer event
+        
         event::emit(TransferEvent {
-    from: sender,
-    to: recipient,
-    id: object::uid_to_inner(&token.id),
-    amount: 1,
-    royalty: 0,  // Set to 0 since we removed royalties
-    asset_id: token.asset_id,
-    });
-
-        // Log transfer attempt
-        log_debug_event(
-            b"Batch transfer token attempt",
-            &token,
-            sender,
-            recipient
-        );
-
-        // Transfer the NFT to the recipient
+            from: sender,
+            to: recipient,
+            id: object::uid_to_inner(&token.id),
+            amount: 1,
+            royalty: 0,
+            asset_id: token.asset_id,
+        });
+        
         transfer::public_transfer(token, recipient);
-
         i = i + 1;
     };
-
-    // Clean up the empty vector
+    
+    // Return remaining tokens
+    while (!vector::is_empty(&tokens)) {
+        let token = vector::pop_back(&mut tokens);
+        transfer::public_transfer(token, sender);
+    };
+    
+    // Clean up
     vector::destroy_empty(tokens);
-
-    // Emit batch transfer event
+    vector::destroy_empty(sender_balances_mut);
+    vector::destroy_empty(used_balances);
+    
     event::emit(BatchTransferEvent {
         from: sender,
         recipients: vector[recipient],
@@ -1070,7 +1209,6 @@ public entry fun transfer_existing_nfts_by_quantity(
         collection_id,
         timestamp: tx_context::epoch(ctx)
     });
-
 }
 
 public fun get_user_balance(user_balance: &UserBalance): u64 {
