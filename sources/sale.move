@@ -8,8 +8,7 @@ module artinals::SALE {
 
     // Import types from ART20 module
     use artinals::ART20::{NFT, CollectionCap, UserBalance};
-    
-    
+
 
     //Errors
     const E_NO_TOKENS_TO_BURN: u64 = 6;
@@ -30,6 +29,9 @@ module artinals::SALE {
     const E_INVALID_PERCENTAGE: u64 = 23;
     const E_PERCENTAGE_SUM_MISMATCH: u64 = 24;
     const E_EMPTY_RECIPIENTS: u64 = 25;
+    const ASSET_ID_NOT_FOUND: u64 = 26;
+    const E_BALANCE_CREATION_FAILED: u64 = 27;
+    const E_BALANCE_TRANSFER_FAILED: u64 = 28;
 
     // Add maximum limits
     const MAX_U64: u64 = 18446744073709551615;
@@ -99,7 +101,7 @@ public struct DebugEvent has copy, drop {
 
 
 // Sale object to track NFT listings
-public struct NFTSale<phantom CURRENCY> has key {
+public struct NFTSale<phantom CURRENCY> has key, store {
     id: UID,
     price_per_nft: u64,
     currency_balance: Balance<CURRENCY>,
@@ -107,6 +109,7 @@ public struct NFTSale<phantom CURRENCY> has key {
     collection_id: ID,
     is_active: bool,
     nft_count: u64,  // Track number of NFTs instead of storing them directly
+    asset_ids: vector<u64>,
     artist_name: String,
     artwork_title: String,
     width_cm: u64,
@@ -193,6 +196,14 @@ fun safe_sub(a: u64, b: u64): u64 {
     a - b
 }
 
+fun safe_mul(a: u64, b: u64): u64 {
+    if (a == 0 || b == 0) {
+        return 0
+    };
+    assert!(a <= MAX_U64 / b, E_OVERFLOW);
+    a * b
+}
+
     
 
 // NFT Sale functions
@@ -215,15 +226,15 @@ public entry fun create_nft_sale<CURRENCY>(
     ctx: &mut TxContext
 ) {
     let sender = tx_context::sender(ctx);
-    
+
     // Price validation
     assert!(price_per_nft <= MAX_PRICE, E_MAX_PRICE_EXCEEDED);
     assert!(price_per_nft > 0, E_INVALID_PRICE);
     assert!(nft_amount <= MAX_BATCH_SIZE, E_MAX_BATCH_SIZE_EXCEEDED);
-    
+
     let nft_length = vector::length(&nfts);
     assert!(nft_length >= nft_amount, E_NO_TOKENS_TO_BURN);
-    
+
     // Calculate total available balance
     let mut total_available = 0u64;
     let mut i = 0;
@@ -233,17 +244,17 @@ public entry fun create_nft_sale<CURRENCY>(
         total_available = safe_add(total_available, ART20::get_user_balance_amount(balance));
         i = i + 1;
     };
-    
+
     // Verify sufficient total balance
     assert!(total_available >= nft_amount, E_INSUFFICIENT_BALANCE);
-    
+
     // Get collection verification using ART20 getters
     let first_nft = vector::borrow(&nfts, 0);
     let collection_id = ART20::get_nft_collection_id(first_nft);
-    
+
     // Verify collection matches
     assert!(ART20::get_collection_cap_id(collection_cap) == collection_id, E_COLLECTION_MISMATCH);
-    
+
     // Create sale object
     let mut sale = NFTSale<CURRENCY> {
         id: object::new(ctx),
@@ -253,6 +264,7 @@ public entry fun create_nft_sale<CURRENCY>(
         collection_id,
         is_active: true,
         nft_count: nft_amount,
+        asset_ids: vector::empty(),
         artist_name: string::utf8(artist_name),
         artwork_title: string::utf8(artwork_title),
         width_cm,
@@ -266,46 +278,56 @@ public entry fun create_nft_sale<CURRENCY>(
     };
 
     let sale_id = object::uid_to_inner(&sale.id);
+
+    // Update sender balances
+    let mut remaining_amount = nft_amount;
     
+    let mut i = 0;
+    while (i < vector::length(&sender_balances) && remaining_amount > 0) {
+        let balance = vector::borrow_mut(&mut sender_balances, i);
+        let current_balance = ART20::get_user_balance_amount(balance);
+        
+        if (current_balance > 0) {
+            if (current_balance <= remaining_amount) {
+                // Use entire balance
+                remaining_amount = remaining_amount - current_balance;
+                ART20::set_user_balance_amount(balance, 0);
+            } else {
+                // Split balance
+                ART20::set_user_balance_amount(balance, current_balance - remaining_amount);
+                remaining_amount = 0;
+            };
+        };
+        i = i + 1;
+    };
+
     // Process NFTs
     let mut i = 0;
     while (i < nft_amount) {
         let nft = vector::pop_back(&mut nfts);
-        df::add(&mut sale.id, NFTFieldKey<CURRENCY> { asset_id: i + 1 }, nft);
-        
+        let asset_id = ART20::get_nft_asset_id(&nft);
+
+        df::add(&mut sale.id, NFTFieldKey<CURRENCY> { asset_id }, nft);
+        vector::push_back(&mut sale.asset_ids, asset_id);
+
         event::emit(NFTListingEvent<CURRENCY> {
             sale_id,
             listing_id: sale_id,
-            asset_id: i + 1,
+            asset_id,
             price: price_per_nft
         });
-        
+
         i = i + 1;
     };
     
-    // Update sender balances
-    let mut remaining = nft_amount;
-    let mut j = 0;
-    while (j < vector::length(&sender_balances) && remaining > 0) {
-        let balance = vector::borrow_mut(&mut sender_balances, j);
-        let current_amount = ART20::get_user_balance_amount(balance);
-        
-        if (current_amount > 0) {
-            if (current_amount <= remaining) {
-                remaining = remaining - current_amount;
-                ART20::set_user_balance_amount(balance, 0);
-            } else {
-                ART20::set_user_balance_amount(balance, current_amount - remaining);
-                remaining = 0;
-            };
-        };
-        j = j + 1;
-    };
-    
-    // Return remaining balances to sender using public transfer
+    // Return remaining balances and clean up empty ones
     while (!vector::is_empty(&sender_balances)) {
         let balance = vector::pop_back(&mut sender_balances);
-        transfer::public_transfer(balance, sender);
+        if (ART20::get_user_balance_amount(&balance) > 0) {
+            transfer::public_transfer(balance, sender);
+        } else {
+            ART20::cleanup_empty_balance(balance);
+        };
     };
     
     // Return remaining NFTs
@@ -326,73 +348,91 @@ public entry fun create_nft_sale<CURRENCY>(
         collection_id
     });
     
-    transfer::share_object(sale);
+    transfer::public_share_object(sale);
 }
 
 // Purchase NFTs from a sale
 public entry fun purchase_nfts<CURRENCY>(
     sale: &mut NFTSale<CURRENCY>,
     payment: Coin<CURRENCY>,
-    mut asset_ids: vector<u64>,  // Changed to handle multiple assets
+    mut asset_ids: vector<u64>,
     collection_cap: &CollectionCap,
     ctx: &mut TxContext
 ) {
     let buyer = tx_context::sender(ctx);
-    
-    // Basic validations
+
+    // Validate sale state
     assert!(sale.is_active, E_SALE_NOT_ACTIVE);
     assert!(!ART20::is_denied(collection_cap, buyer), E_ADDRESS_DENIED);
-    
-    // Validate purchase amount
+
     let purchase_count = vector::length(&asset_ids);
     assert!(purchase_count > 0 && purchase_count <= MAX_BATCH_SIZE, E_INVALID_BATCH_SIZE);
-    let total_cost = sale.price_per_nft * purchase_count;
-    
-    // Verify payment amount
+
+    let total_cost = safe_mul(sale.price_per_nft, purchase_count);
     let payment_amount = coin::value(&payment);
     assert!(payment_amount >= total_cost, E_INSUFFICIENT_BALANCE);
-    
-    // Verify all asset IDs exist and are valid
+
+    // Validate asset IDs and ensure they exist in the sale
     let mut i = 0;
     while (i < purchase_count) {
         let asset_id = *vector::borrow(&asset_ids, i);
-        assert!(asset_id > 0 && asset_id <= sale.nft_count, E_INVALID_ASSET_ID);
+        assert!(vector::contains(&sale.asset_ids, &asset_id), E_INVALID_ASSET_ID);
         assert!(df::exists_(&sale.id, NFTFieldKey<CURRENCY> { asset_id }), E_INVALID_ASSET_ID);
         i = i + 1;
     };
-    
-    // Create vectors for batch event
-    let mut nft_ids = vector::empty<ID>();
-    
-    // Process payment first
+
+    // Process payment
     let mut payment_mut = payment;
     let paid = coin::split(&mut payment_mut, total_cost, ctx);
     balance::join(&mut sale.currency_balance, coin::into_balance(paid));
-    
-    // Return excess payment
+
     if (coin::value(&payment_mut) > 0) {
         transfer::public_transfer(payment_mut, buyer);
     } else {
         coin::destroy_zero(payment_mut);
     };
-    
-    // Create initial buyer balance
+
+    // Create and transfer UserBalance - NEW ADDITION
     let buyer_balance = ART20::create_user_balance(
         sale.collection_id,
         purchase_count,
         ctx
     );
+    assert!(ART20::get_user_balance_amount(&buyer_balance) == purchase_count, E_BALANCE_CREATION_FAILED);
+
+    assert!(ART20::get_user_balance_collection_id(&buyer_balance) == sale.collection_id, E_BALANCE_TRANSFER_FAILED);
     
-    // Process NFTs
+    // Transfer the balance object to buyer
+    transfer::public_transfer(buyer_balance, buyer);
+
+    // Transfer NFTs to buyer and remove them from sale
     while (!vector::is_empty(&asset_ids)) {
         let asset_id = vector::pop_back(&mut asset_ids);
-        let nft: NFT = df::remove(&mut sale.id, NFTFieldKey<CURRENCY> { asset_id });
-        
-        // Use ART20's getter for NFT ID
+        assert!(df::exists_(&sale.id, NFTFieldKey<CURRENCY> { asset_id }), E_INVALID_ASSET_ID);
+
+        // Remove the NFT from the dynamic field
+        let nft = df::remove(&mut sale.id, NFTFieldKey<CURRENCY> { asset_id });
         let nft_id = ART20::get_nft_id(&nft);
-        vector::push_back(&mut nft_ids, nft_id);
-        
-        // Emit transfer event
+
+        // Transfer NFT directly to the buyer
+        transfer::public_transfer(nft, buyer);
+
+        // Remove the asset ID from sale.asset_ids using `vector::swap_remove`
+        let mut found = false;
+        let mut idx = 0;
+        while (idx < vector::length(&sale.asset_ids)) {
+            if (*vector::borrow(&sale.asset_ids, idx) == asset_id) {
+                vector::swap_remove(&mut sale.asset_ids, idx);
+                found = true;
+                break
+            };
+            idx = idx + 1;
+        };
+
+        // Ensure the asset ID was found and removed
+        assert!(found, ASSET_ID_NOT_FOUND);
+
+        // Emit transfer event for the NFT
         event::emit(TransferEvent {
             from: sale.creator,
             to: buyer,
@@ -401,28 +441,20 @@ public entry fun purchase_nfts<CURRENCY>(
             royalty: 0,
             asset_id
         });
-        
-        transfer::public_transfer(nft, buyer);
-        
-        // Update sale nft count
-        sale.nft_count = sale.nft_count - 1;
+
+        // Update the sale's NFT count
+        sale.nft_count = safe_sub(sale.nft_count, 1);
     };
-    
-    // Emit batch purchase event
+
+    // Emit purchase event
     event::emit(NFTPurchased<CURRENCY> {
         sale_id: object::uid_to_inner(&sale.id),
         buyer,
-        nft_ids,
+        nft_ids: vector::empty<ID>(),
         amount_paid: total_cost
     });
-    
-    // Transfer buyer balance
-    transfer::public_transfer(buyer_balance, buyer);
-    
-    // Clean up
-    vector::destroy_empty(asset_ids);
-    vector::destroy_empty(nft_ids);
 }
+
 
 // Add more NFTs to an existing sale with enhanced debug events
 public entry fun add_nfts_to_sale<CURRENCY>(
@@ -435,19 +467,19 @@ public entry fun add_nfts_to_sale<CURRENCY>(
 ) {
     let sender = tx_context::sender(ctx);
     let sale_id = object::uid_to_inner(&sale.id);
-    
+
     assert!(sender == sale.creator, E_NOT_CREATOR);
     assert!(sale.is_active, E_SALE_NOT_ACTIVE);
-    
+
     let nft_amount = vector::length(&asset_ids);
     let nft_length = vector::length(&nfts);
-    
+
     assert!(nft_length >= nft_amount, E_NO_TOKENS_TO_BURN);
     assert!(nft_amount <= MAX_BATCH_SIZE, E_MAX_BATCH_SIZE_EXCEEDED);
-    
+
     let new_total_count = safe_add(sale.nft_count, nft_amount);
     assert!(new_total_count <= MAX_SUPPLY, E_MAX_SUPPLY_EXCEEDED);
-    
+
     // Calculate total available balance
     let mut total_available = 0u64;
     let mut i = 0;
@@ -457,27 +489,27 @@ public entry fun add_nfts_to_sale<CURRENCY>(
         total_available = safe_add(total_available, ART20::get_user_balance_amount(balance));
         i = i + 1;
     };
-    
+
     // Verify sufficient total balance
     assert!(total_available >= nft_amount, E_INSUFFICIENT_BALANCE);
-    
+
     let first_nft = vector::borrow(&nfts, 0);
     assert!(ART20::get_nft_collection_id(first_nft) == sale.collection_id, E_COLLECTION_MISMATCH);
-    
+
     // Verify collection matches
     assert!(ART20::get_collection_cap_id(collection_cap) == sale.collection_id, E_COLLECTION_MISMATCH);
-    
+
     // Create vectors for tracking
     let mut token_ids = vector::empty<ID>();
     let mut amounts = vector::empty<u64>();
-    
+
     // Process NFTs and update balances
     let mut remaining = nft_amount;
     let mut j = 0;
     while (j < vector::length(&sender_balances) && remaining > 0) {
         let balance = vector::borrow_mut(&mut sender_balances, j);
         let current_amount = ART20::get_user_balance_amount(balance);
-        
+
         if (current_amount > 0) {
             if (current_amount <= remaining) {
                 remaining = remaining - current_amount;
@@ -489,53 +521,54 @@ public entry fun add_nfts_to_sale<CURRENCY>(
         };
         j = j + 1;
     };
-    
+
     // Process each NFT according to asset_ids
     let mut i = 0;
     while (i < nft_amount) {
         let nft = vector::pop_back(&mut nfts);
-        
+
         // Verify NFT belongs to collection
         assert!(ART20::get_nft_collection_id(&nft) == sale.collection_id, E_COLLECTION_MISMATCH);
-        
+
         // Get NFT ID for tracking
         let nft_id = ART20::get_nft_id(&nft);
         vector::push_back(&mut token_ids, nft_id);
         vector::push_back(&mut amounts, 1);
-        
+
         // Add NFT to sale
-        let new_sale_asset_id = sale.nft_count + i + 1;
-        df::add(&mut sale.id, NFTFieldKey<CURRENCY> { asset_id: new_sale_asset_id }, nft);
-        
+        let asset_id = ART20::get_nft_asset_id(&nft);
+        df::add(&mut sale.id, NFTFieldKey<CURRENCY> { asset_id }, nft);
+        vector::push_back(&mut sale.asset_ids, asset_id);
+
         event::emit(NFTListingEvent<CURRENCY> {
             sale_id,
             listing_id: sale_id,
-            asset_id: new_sale_asset_id,
+            asset_id: asset_id,
             price: sale.price_per_nft
         });
-        
+
         i = i + 1;
     };
-    
+
     // Return remaining NFTs
     while (!vector::is_empty(&nfts)) {
         let nft = vector::pop_back(&mut nfts);
         transfer::public_transfer(nft, sender);
     };
-    
+
     // Return remaining balances to sender
     while (!vector::is_empty(&sender_balances)) {
         let balance = vector::pop_back(&mut sender_balances);
         transfer::public_transfer(balance, sender);
     };
-    
+
     // Clean up vectors
     vector::destroy_empty(nfts);
     vector::destroy_empty(sender_balances);
-    
+
     // Update sale nft count
     sale.nft_count = safe_add(sale.nft_count, nft_amount);
-    
+
     // Emit batch transfer event
     event::emit(BatchTransferEvent {
         from: sender,
@@ -545,7 +578,7 @@ public entry fun add_nfts_to_sale<CURRENCY>(
         collection_id: sale.collection_id,
         timestamp: tx_context::epoch(ctx)
     });
-    
+
     // Emit sale update event
     event::emit(SaleCreated<CURRENCY> {
         sale_id,
@@ -555,6 +588,7 @@ public entry fun add_nfts_to_sale<CURRENCY>(
         collection_id: sale.collection_id
     });
 }
+
 
     // Update withdrawal function to be generic
     public entry fun withdraw_currency<CURRENCY>(
@@ -668,85 +702,101 @@ public entry fun add_nfts_to_sale<CURRENCY>(
 
 public entry fun remove_nfts_from_sale<CURRENCY>(
     sale: &mut NFTSale<CURRENCY>,
-    asset_ids: vector<u64>,  // Removed mut as it's not needed
-    collection_cap: &mut CollectionCap,  // Keep for collection verification
-    mut sender_balances: vector<UserBalance>,
+    asset_ids: vector<u64>, // Asset IDs to remove
+    collection_cap: &mut CollectionCap, // Collection verification
+    mut sender_balances: vector<UserBalance>, // Balances to adjust
     ctx: &mut TxContext
 ) {
     let sender = tx_context::sender(ctx);
-    
-    // Verify sender is creator and sale is active
+
+    // Verify sender is the creator of the sale
     assert!(sender == sale.creator, E_NOT_CREATOR);
+
+    // Verify sale is active
     assert!(sale.is_active, E_SALE_NOT_ACTIVE);
-    
-    // Get amount of NFTs to remove
-    let remove_amount = vector::length(&asset_ids);
-    assert!(remove_amount > 0 && remove_amount <= sale.nft_count, E_INVALID_BATCH_SIZE);
-    assert!(remove_amount <= MAX_BATCH_SIZE, E_MAX_BATCH_SIZE_EXCEEDED);
-    
-    // Verify collection matches
+
+    // Validate collection matches
     assert!(ART20::get_collection_cap_id(collection_cap) == sale.collection_id, E_COLLECTION_MISMATCH);
-    
-    // Calculate total balance capacity
-    let mut total_balance_capacity = 0u64;
-    let mut i = 0;
-    let n = vector::length(&sender_balances);
-    while (i < n) {
-        let balance = vector::borrow(&sender_balances, i);
-        assert!(ART20::get_user_balance_collection_id(balance) == sale.collection_id, E_COLLECTION_MISMATCH);
-        total_balance_capacity = safe_add(total_balance_capacity, ART20::get_user_balance_amount(balance));
-        i = i + 1;
-    };
-    
-    // Track NFTs and events
-    let mut token_ids = vector::empty<ID>();
-    let mut amounts = vector::empty<u64>();
-    
-    // Verify and process asset IDs
+
+    // Number of NFTs to remove
+    let remove_amount = vector::length(&asset_ids);
+    assert!(remove_amount > 0, E_INVALID_BATCH_SIZE);
+    assert!(remove_amount <= MAX_BATCH_SIZE, E_MAX_BATCH_SIZE_EXCEEDED);
+    assert!(remove_amount <= sale.nft_count, E_INVALID_BATCH_SIZE);
+
+    // Debug: Starting the removal process
+    event::emit(DebugEvent {
+        message: string::utf8(b"Starting remove_nfts_from_sale"),
+        token_id: object::uid_to_inner(&sale.id),
+        sender,
+        recipient: sender
+    });
+
     let mut i = 0;
     while (i < remove_amount) {
         let asset_id = *vector::borrow(&asset_ids, i);
-        assert!(asset_id > 0 && asset_id <= sale.nft_count, E_INVALID_ASSET_ID);
+
+        // Debug: Log asset ID being processed
+        event::emit(DebugEvent {
+            message: string::utf8(b"Processing asset ID"),
+            token_id: object::uid_to_inner(&sale.id),
+            sender,
+            recipient: sender
+        });
+
+        // Verify asset ID exists in sale.asset_ids
+        if (!vector::contains(&sale.asset_ids, &asset_id)) {
+            event::emit(DebugEvent {
+                message: string::utf8(b"Asset ID not found in sale.asset_ids"),
+                token_id: object::uid_to_inner(&sale.id),
+                sender,
+                recipient: sender
+            });
+        };
+        assert!(vector::contains(&sale.asset_ids, &asset_id), E_INVALID_ASSET_ID);
+
+        // Verify asset ID exists in dynamic fields
+        if (!df::exists_(&sale.id, NFTFieldKey<CURRENCY> { asset_id })) {
+            event::emit(DebugEvent {
+                message: string::utf8(b"Asset ID not found in dynamic fields"),
+                token_id: object::uid_to_inner(&sale.id),
+                sender,
+                recipient: sender
+            });
+        };
         assert!(df::exists_(&sale.id, NFTFieldKey<CURRENCY> { asset_id }), E_INVALID_ASSET_ID);
-        
+
+        // Remove asset ID from dynamic fields
         let nft: NFT = df::remove(&mut sale.id, NFTFieldKey<CURRENCY> { asset_id });
-        
-        // Verify NFT collection
-        assert!(ART20::get_nft_collection_id(&nft) == sale.collection_id, E_COLLECTION_MISMATCH);
-        
-        // Track NFT for events
-        let nft_id = ART20::get_nft_id(&nft);
-        vector::push_back(&mut token_ids, nft_id);
-        vector::push_back(&mut amounts, 1);
-        
+
+        // Remove asset ID from sale.asset_ids vector
+        remove_asset_id_from_vector(&mut sale.asset_ids, asset_id);
+
         // Transfer NFT back to sender
         transfer::public_transfer(nft, sender);
+
         i = i + 1;
     };
-    
-    // Create new balance or update existing ones
+
+    // Adjust sender balances
     let mut remaining_amount = remove_amount;
     let mut j = 0;
     while (j < vector::length(&sender_balances) && remaining_amount > 0) {
         let balance = vector::borrow_mut(&mut sender_balances, j);
         let current_amount = ART20::get_user_balance_amount(balance);
-        let new_amount = safe_add(current_amount, 
-            if (remaining_amount > MAX_BATCH_SIZE - current_amount) { 
-                MAX_BATCH_SIZE - current_amount 
-            } else { 
-                remaining_amount 
-            }
-        );
-        ART20::set_user_balance_amount(balance, new_amount);
-        remaining_amount = if (remaining_amount > MAX_BATCH_SIZE - current_amount) {
-            remaining_amount - (MAX_BATCH_SIZE - current_amount)
+
+        if (current_amount < remaining_amount) {
+            ART20::set_user_balance_amount(balance, 0);
+            remaining_amount = safe_sub(remaining_amount, current_amount);
         } else {
-            0
+            ART20::set_user_balance_amount(balance, safe_sub(current_amount, remaining_amount));
+            remaining_amount = 0;
         };
+
         j = j + 1;
     };
-    
-    // If there's still remaining amount, create new balance
+
+    // Create a new balance if remaining_amount > 0
     if (remaining_amount > 0) {
         let new_balance = ART20::create_user_balance(
             sale.collection_id,
@@ -755,28 +805,40 @@ public entry fun remove_nfts_from_sale<CURRENCY>(
         );
         transfer::public_transfer(new_balance, sender);
     };
-    
-    // Return all balances to sender
+
+    // Explicitly return all sender balances
     while (!vector::is_empty(&sender_balances)) {
         let balance = vector::pop_back(&mut sender_balances);
         transfer::public_transfer(balance, sender);
     };
-    
-    // Update sale nft count
+
+    // Update sale's NFT count
     sale.nft_count = safe_sub(sale.nft_count, remove_amount);
-    
-    // Emit batch transfer event
+
+    // Emit event for the batch transfer
     event::emit(BatchTransferEvent {
         from: sender,
         recipients: vector[sender],
-        token_ids,
-        amounts,
+        token_ids: vector::empty(), // Adjust as needed for actual token IDs
+        amounts: vector::empty(), // Adjust as needed
         collection_id: sale.collection_id,
         timestamp: tx_context::epoch(ctx)
     });
-    
-    vector::destroy_empty(sender_balances);  // Make sure vector is consumed
+
+    // Debug: Successfully removed NFTs
+    event::emit(DebugEvent {
+        message: string::utf8(b"Successfully removed NFTs from sale"),
+        token_id: object::uid_to_inner(&sale.id),
+        sender,
+        recipient: sender
+    });
+
+    // Explicitly destroy the now-empty sender_balances vector
+    vector::destroy_empty(sender_balances);
 }
+
+
+
 
 // Add close sale functionality
 public entry fun close_sale<CURRENCY>(
@@ -1180,5 +1242,26 @@ public fun get_signature<CURRENCY>(sale: &NFTSale<CURRENCY>): String {
 public fun get_about_artwork<CURRENCY>(sale: &NFTSale<CURRENCY>): String {
     sale.about_artwork
 }
+
+fun remove_asset_id_from_vector(asset_ids: &mut vector<u64>, asset_id: u64) {
+    let mut i = 0;
+    let len = vector::length(asset_ids);
+    let mut found = false;
+    while (i < len) {
+        if (*vector::borrow(asset_ids, i) == asset_id) {
+            vector::swap_remove(asset_ids, i);
+            found = true;
+            break
+        };
+        i = i + 1;
+    };
+    // If asset_id was not found, raise an error
+    assert!(found, ASSET_ID_NOT_FOUND);
+}
+
+public fun get_available_asset_ids<CURRENCY>(sale: &NFTSale<CURRENCY>): &vector<u64> {
+    &sale.asset_ids
+}
+
 
 }

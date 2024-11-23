@@ -6,6 +6,7 @@ module artinals::ART20 {
     use sui::package;
     use sui::display;
     use sui::table::{Self, Table};
+    
 
     
 
@@ -26,6 +27,7 @@ module artinals::ART20 {
     const E_OVERFLOW: u64 = 18;
     const E_MAX_SUPPLY_EXCEEDED: u64 = 19;
     const E_MAX_BATCH_SIZE_EXCEEDED: u64 = 20;
+    const ASSET_ID_NOT_FOUND: u64 = 21;
 
     // Add maximum limits
     const MAX_U64: u64 = 18446744073709551615;
@@ -141,11 +143,17 @@ public struct NFTMintedEvent has copy, drop {
     new_description: String,
 }
 
-public struct MutabilityChangeEvent has copy, drop {
-    id: ID,
-    is_mutable: bool,
-}
 
+// Define DebugEvent
+    public struct DebugEvent has copy, drop {
+        key: String,
+        value: String,
+    }
+
+    // Emit debug events
+    public fun emit_debug_event(key: String, value: String) {
+        event::emit(DebugEvent { key, value });
+    }
 
 public struct MetadataFrozenEvent has copy, drop {
     id: ID,
@@ -159,12 +167,7 @@ public struct LogoURIUpdateEvent has copy, drop {
 }
 
 
-public struct DebugEvent has copy, drop {
-    message: String,
-    token_id: ID,
-    sender: address,
-    recipient: address,
-}
+
 
 public struct BatchTransferEvent has copy, drop {
     from: address,
@@ -240,7 +243,7 @@ fun safe_sub(a: u64, b: u64): u64 {
 }
 
 
-   public entry fun mint_token(
+   public entry fun mint_art20(
     name: vector<u8>, 
     description: vector<u8>, 
     initial_supply: u64,
@@ -258,7 +261,7 @@ fun safe_sub(a: u64, b: u64): u64 {
     assert!(initial_supply <= MAX_SUPPLY, E_MAX_SUPPLY_EXCEEDED);
     
     // Safe arithmetic for supplies
-    assert!(initial_supply > 0, 1);
+    assert!(initial_supply >= 0, 1);
     assert!(max_supply == 0 || initial_supply <= max_supply, 2);
     
     // Check counter overflow
@@ -345,7 +348,7 @@ fun safe_sub(a: u64, b: u64): u64 {
 
 
     // New function to mint additional tokens (only for mintable NFTs)
-   public entry fun mint_additional(
+   public entry fun mint_additional_art20(
     collection_cap: &mut CollectionCap,
     amount: u64,
     counter: &mut TokenIdCounter,
@@ -404,6 +407,8 @@ fun safe_sub(a: u64, b: u64): u64 {
 }
 
 
+
+
 //  drop_collection_cap function
 public fun drop_collection_cap(collection_cap: CollectionCap) {
     let CollectionCap {
@@ -432,46 +437,138 @@ public fun drop_collection_cap(collection_cap: CollectionCap) {
 }
 
 
-public fun update_metadata(
+public entry fun update_metadata_by_object(
     token: &mut NFT,
-    new_name: String,
-    new_description: String,
-    new_uri: vector<u8>,  // Change this to vector<u8>
-    new_logo_uri: vector<u8>, // Change this to vector<u8>
+    collection_cap: &CollectionCap,
+    mut new_name: Option<String>,
+    mut new_description: Option<String>,
+    mut new_uri: Option<vector<u8>>,
+    mut new_logo_uri: Option<vector<u8>>,
     ctx: &mut TxContext
 ) {
-    // Size limits for metadata
-    assert!(string::length(&new_name) <= 128, E_INVALID_LENGTH);
-    assert!(string::length(&new_description) <= 1000, E_INVALID_LENGTH);
-    assert!(vector::length(&new_uri) <= 256, E_INVALID_LENGTH);
-    assert!(vector::length(&new_logo_uri) <= 256, E_INVALID_LENGTH);
+    
+    // Check permissions
+    assert!(token.collection_id == get_collection_cap_id(collection_cap), E_COLLECTION_MISMATCH); // Verify collection
+    assert!(token.is_mutable && collection_cap.is_mutable, E_TOKEN_NOT_MUTABLE); // Check both mutability flags
+    assert!(!token.metadata_frozen, E_METADATA_FROZEN);
+    assert!(tx_context::sender(ctx) == token.creator, E_NOT_CREATOR);
+    
 
-    assert!(token.is_mutable, 1); // Error if token is not mutable
-    assert!(!token.metadata_frozen, 2); // Error if metadata is frozen
-    assert!(tx_context::sender(ctx) == token.creator, 3); // Only creator can update
+    // Update name if provided
+    if (option::is_some(&new_name)) {
+        let name = option::extract(&mut new_name);
+        assert!(string::length(&name) <= 128, E_INVALID_LENGTH);
+        token.name = name;
+    };
 
-    token.name = new_name;
-    token.description = new_description;
-    token.uri = url::new_unsafe_from_bytes(new_uri); // Convert to Url
-    token.logo_uri = url::new_unsafe_from_bytes(new_logo_uri); // Convert to Url
+    // Update description if provided
+    if (option::is_some(&new_description)) {
+        let description = option::extract(&mut new_description);
+        assert!(string::length(&description) <= 1000, E_INVALID_LENGTH);
+        token.description = description;
+    };
 
-    // Emit an event for metadata update
+    // Update URI if provided
+    if (option::is_some(&new_uri)) {
+        let uri = option::extract(&mut new_uri);
+        assert!(vector::length(&uri) <= 256, E_INVALID_LENGTH);
+        token.uri = url::new_unsafe_from_bytes(uri);
+    };
+
+    // Update logo URI if provided
+    if (option::is_some(&new_logo_uri)) {
+        let logo_uri = option::extract(&mut new_logo_uri);
+        assert!(vector::length(&logo_uri) <= 256, E_INVALID_LENGTH);
+        token.logo_uri = url::new_unsafe_from_bytes(logo_uri);
+    };
+
+    // Emit metadata update event
     event::emit(MetadataUpdateEvent {
         id: object::uid_to_inner(&token.id),
-        new_name: new_name,
-        new_description: new_description,
+        new_name: token.name,
+        new_description: token.description,
     });
 }
 
+#[allow(lint(self_transfer))]
+public entry fun update_metadata_by_asset_id(
+    collection_cap: &CollectionCap,
+    mut nfts: vector<NFT>,
+    asset_id: u64,
+    mut new_name: Option<String>,          // Added mut here
+    mut new_description: Option<String>,    // Added mut here
+    mut new_uri: Option<vector<u8>>,       // Added mut here
+    mut new_logo_uri: Option<vector<u8>>,  // Added mut here
+    ctx: &mut TxContext
+) {
+    let sender = tx_context::sender(ctx);
+    let collection_id = get_collection_cap_id(collection_cap);
+    let n = vector::length(&nfts);
+    let mut updated_nfts = vector::empty();
+    let mut i = 0;
+    let mut found = false;
+
+    while (i < n) {
+        let mut nft = vector::pop_back(&mut nfts);
+        if (!found && nft.collection_id == collection_id && nft.asset_id == asset_id) {
+            // Verify permissions
+            assert!(nft.is_mutable && collection_cap.is_mutable, E_TOKEN_NOT_MUTABLE);
+            assert!(sender == nft.creator, E_NOT_CREATOR);
+            assert!(!nft.metadata_frozen, E_METADATA_FROZEN);
+
+            if (option::is_some(&new_name)) {
+                nft.name = option::extract(&mut new_name);
+            };
+
+            if (option::is_some(&new_description)) {
+                nft.description = option::extract(&mut new_description);
+            };
+
+            if (option::is_some(&new_uri)) {
+                nft.uri = url::new_unsafe_from_bytes(option::extract(&mut new_uri));
+            };
+
+            if (option::is_some(&new_logo_uri)) {
+                nft.logo_uri = url::new_unsafe_from_bytes(option::extract(&mut new_logo_uri));
+            };
+
+            event::emit(MetadataUpdateEvent {
+                id: object::uid_to_inner(&nft.id),
+                new_name: nft.name,
+                new_description: nft.description,
+            });
+
+            found = true;
+        };
+
+        vector::push_back(&mut updated_nfts, nft);
+        i = i + 1;
+    };
+
+    assert!(found, ASSET_ID_NOT_FOUND);
+
+    // Transfer NFTs back
+    while (!vector::is_empty(&updated_nfts)) {
+        let nft = vector::pop_back(&mut updated_nfts);
+        transfer::public_transfer(nft, sender);
+    };
+
+    vector::destroy_empty(nfts);
+    vector::destroy_empty(updated_nfts);
+}
+
+
 // New function to update Logo URI of a specific token
-    public fun update_token_logo_uri(
+    public fun update_art20_image_uri(
     token: &mut NFT,
+    collection_cap: &CollectionCap,
     new_logo_uri: vector<u8>, // Change this to vector<u8>
     ctx: &mut TxContext
 ) {
-    assert!(tx_context::sender(ctx) == token.creator, 2); // Only creator can update
-    assert!(token.is_mutable, 2); // Token must be mutable
-    assert!(!token.metadata_frozen, 3); // Metadata must not be frozen
+    assert!(token.collection_id == get_collection_cap_id(collection_cap), E_COLLECTION_MISMATCH);
+    assert!(token.is_mutable && collection_cap.is_mutable, E_TOKEN_NOT_MUTABLE); // Check both mutability flags
+    assert!(!token.metadata_frozen, E_METADATA_FROZEN);
+    assert!(tx_context::sender(ctx) == token.creator, E_NOT_CREATOR);
 
     token.logo_uri = url::new_unsafe_from_bytes(new_logo_uri); // Convert to Url
 
@@ -483,53 +580,151 @@ public fun update_metadata(
 }
 
 
-public fun toggle_mutability(token: &mut NFT, ctx: &mut TxContext) {
-    assert!(tx_context::sender(ctx) == token.creator, 1); // Only creator can toggle
-    token.is_mutable = !token.is_mutable;
 
-    // Optionally, emit an event for mutability change
-    event::emit(MutabilityChangeEvent {
-        id: object::uid_to_inner(&token.id),
-        is_mutable: token.is_mutable,
-    });
-}
-
-
-public fun freeze_metadata(token: &mut NFT, ctx: &mut TxContext) {
-    assert!(tx_context::sender(ctx) == token.creator, 1); // Only creator can freeze
-    assert!(!token.metadata_frozen, 2); // Cannot freeze if already frozen
-    token.metadata_frozen = true;
-    token.is_mutable = false; // Once frozen, metadata is immutable
-
-    event::emit(MetadataFrozenEvent {
-        id: object::uid_to_inner(&token.id),
-    });
-}
-
-
-// Update add_to_deny_list function to check collection authority
-public entry fun add_to_deny_list(
-    collection_cap: &mut CollectionCap,
-    addr: address,
+public entry fun batch_update_metadata(
+    collection_cap: &CollectionCap,
+    mut tokens: vector<NFT>, // Pass vector for batch operations or single token wrapped in vector
+    mut new_name: Option<String>,
+    mut new_description: Option<String>,
+    mut new_uri: Option<vector<u8>>,
+    mut new_logo_uri: Option<vector<u8>>,
     ctx: &mut TxContext
 ) {
-    assert!(tx_context::sender(ctx) == collection_cap.creator, E_NOT_CREATOR);
-    assert!(collection_cap.has_deny_list_authority, E_INVALID_DENY_LIST_AUTHORITY);
-    
-    let deny_list = df::borrow_mut<DenyListKey, Table<address, bool>>(
-        &mut collection_cap.id,
-        DenyListKey {}  // Updated to use new DenyListKey
-    );
-    
-    table::add(deny_list, addr, true);
+    let batch_size = vector::length(&tokens);
 
-    event::emit(DenyListStatusChanged {
-        collection_id: object::uid_to_inner(&collection_cap.id),
-        address: addr,
-        is_denied: true,
-        changed_by: tx_context::sender(ctx)
+    let sender = tx_context::sender(ctx);
+    let collection_id = get_collection_cap_id(collection_cap);
+
+    let mut i = 0;
+    while (i < batch_size) {
+        let token = vector::borrow_mut(&mut tokens, i);
+
+        // Permission and validity checks
+        assert!(token.collection_id == collection_id, E_COLLECTION_MISMATCH);
+        assert!(token.is_mutable && collection_cap.is_mutable, E_TOKEN_NOT_MUTABLE);
+        assert!(!token.metadata_frozen, E_METADATA_FROZEN);
+        assert!(sender == token.creator, E_NOT_CREATOR);
+
+        // Update name if provided
+        if (option::is_some(&new_name)) {
+            let name = option::extract(&mut new_name); // Pass mutable reference here
+            assert!(string::length(&name) <= 128, E_INVALID_LENGTH);
+            token.name = name;
+        };
+
+        // Update description if provided
+        if (option::is_some(&new_description)) {
+            let description = option::extract(&mut new_description); // Pass mutable reference here
+            assert!(string::length(&description) <= 1000, E_INVALID_LENGTH);
+            token.description = description;
+        };
+
+        // Update URI if provided
+        if (option::is_some(&new_uri)) {
+            let uri = option::extract(&mut new_uri); // Pass mutable reference here
+            assert!(vector::length(&uri) <= 256, E_INVALID_LENGTH);
+            token.uri = url::new_unsafe_from_bytes(uri);
+        };
+
+        // Update logo URI if provided
+        if (option::is_some(&new_logo_uri)) {
+            let logo_uri = option::extract(&mut new_logo_uri); // Pass mutable reference here
+            assert!(vector::length(&logo_uri) <= 256, E_INVALID_LENGTH);
+            token.logo_uri = url::new_unsafe_from_bytes(logo_uri);
+        };
+
+        // Emit metadata update event
+        event::emit(MetadataUpdateEvent {
+            id: object::uid_to_inner(&token.id),
+            new_name: token.name,
+            new_description: token.description,
+        });
+
+        i = i + 1;
+    };
+
+    // Transfer the updated tokens back to the sender
+    while (!vector::is_empty(&tokens)) {
+        let token = vector::pop_back(&mut tokens);
+        transfer::public_transfer(token, sender);
+    };
+
+    // Destroy the empty vector
+    vector::destroy_empty(tokens);
+}
+
+
+
+public entry fun batch_freeze_metadata(
+    mut tokens: vector<NFT>,
+    collection_cap: &CollectionCap,
+    ctx: &mut TxContext
+) {
+    let sender = tx_context::sender(ctx);
+    let n = vector::length(&tokens);
+    
+    // Validate the batch size
+    assert!(n > 0 && n <= MAX_BATCH_SIZE, E_INVALID_BATCH_SIZE);
+
+    let collection_id = get_collection_cap_id(collection_cap);
+
+    let mut i = 0;
+    while (i < n) {
+        let token = vector::borrow_mut(&mut tokens, i);
+        
+        // Validate that the token belongs to the same collection
+        assert!(token.collection_id == collection_id, E_COLLECTION_MISMATCH);
+
+        // Verify that the sender is the creator of the token
+        assert!(sender == token.creator, E_NOT_CREATOR);
+
+        // Check if the token is already frozen
+        assert!(!token.metadata_frozen, E_METADATA_FROZEN);
+
+        // Freeze the metadata and set immutability
+        token.metadata_frozen = true;
+        token.is_mutable = false;
+
+        // Emit a metadata freeze event
+        event::emit(MetadataFrozenEvent {
+            id: object::uid_to_inner(&token.id),
+        });
+
+        i = i + 1;
+    };
+
+    // Transfer the updated tokens back to the sender
+    while (!vector::is_empty(&tokens)) {
+        let token = vector::pop_back(&mut tokens);
+        transfer::public_transfer(token, sender);
+    };
+
+    // Clean up the tokens vector
+    vector::destroy_empty(tokens);
+}
+
+public entry fun freeze_collection_metadata(
+    collection_cap: &mut CollectionCap,
+    ctx: &mut TxContext
+) {
+    let sender = tx_context::sender(ctx);
+
+    // Ensure only the creator of the collection can perform this operation
+    assert!(sender == collection_cap.creator, E_NOT_CREATOR);
+
+    // Check if the collection metadata is already frozen
+    assert!(collection_cap.is_mutable, E_METADATA_FROZEN);
+
+    // Set the collection as immutable
+    collection_cap.is_mutable = false;
+
+    // Emit an event for the collection metadata freeze
+    event::emit(MetadataFrozenEvent {
+        id: object::uid_to_inner(&collection_cap.id),
     });
 }
+
+
 
 public fun has_deny_list_authority(collection_cap: &CollectionCap): bool {
     collection_cap.has_deny_list_authority
@@ -549,28 +744,85 @@ public fun is_denied(collection_cap: &CollectionCap, addr: address): bool {
     table::contains(deny_list, addr)
 }
 
-public entry fun remove_from_deny_list(
+// Batch add addresses to deny list
+public entry fun add_to_deny_list(
     collection_cap: &mut CollectionCap,
-    addr: address,
+    addrs: vector<address>,
     ctx: &mut TxContext
 ) {
-    assert!(tx_context::sender(ctx) == collection_cap.creator, E_NOT_CREATOR);
+    let sender = tx_context::sender(ctx);
+    let addr_count = vector::length(&addrs);
+    
+    // Basic validations
+    assert!(addr_count > 0 && addr_count <= MAX_BATCH_SIZE, E_INVALID_BATCH_SIZE);
+    assert!(sender == collection_cap.creator, E_NOT_CREATOR);
     assert!(collection_cap.has_deny_list_authority, E_INVALID_DENY_LIST_AUTHORITY);
     
-    let deny_list = df::borrow_mut<DenyListKey, Table<address, bool>>(
-        &mut collection_cap.id,
-        DenyListKey {}  // Updated to use new DenyListKey
-    );
+    let collection_id = object::uid_to_inner(&collection_cap.id);
     
-    table::remove(deny_list, addr);
-
-    event::emit(DenyListStatusChanged {
-        collection_id: object::uid_to_inner(&collection_cap.id),
-        address: addr,
-        is_denied: false,
-        changed_by: tx_context::sender(ctx)
-    });
+    let mut i = 0;
+    while (i < addr_count) {
+        let addr = *vector::borrow(&addrs, i);
+        let deny_list = df::borrow_mut<DenyListKey, Table<address, bool>>(
+            &mut collection_cap.id,
+            DenyListKey {}
+        );
+        
+        // Skip if address is already in deny list
+        if (!table::contains(deny_list, addr)) {
+            table::add(deny_list, addr, true);
+            
+            event::emit(DenyListStatusChanged {
+                collection_id,
+                address: addr,
+                is_denied: true,
+                changed_by: sender
+            });
+        };
+        
+        i = i + 1;
+    };
 }
+
+public entry fun remove_from_deny_list(
+    collection_cap: &mut CollectionCap,
+    addrs: vector<address>,
+    ctx: &mut TxContext
+) {
+    let sender = tx_context::sender(ctx);
+    let addr_count = vector::length(&addrs);
+    
+    // Basic validations
+    assert!(addr_count > 0 && addr_count <= MAX_BATCH_SIZE, E_INVALID_BATCH_SIZE);
+    assert!(sender == collection_cap.creator, E_NOT_CREATOR);
+    assert!(collection_cap.has_deny_list_authority, E_INVALID_DENY_LIST_AUTHORITY);
+    
+    let collection_id = object::uid_to_inner(&collection_cap.id);
+    
+    let mut i = 0;
+    while (i < addr_count) {
+        let addr = *vector::borrow(&addrs, i);
+        let deny_list = df::borrow_mut<DenyListKey, Table<address, bool>>(
+            &mut collection_cap.id,
+            DenyListKey {}
+        );
+        
+        // Skip if address is not in deny list
+        if (table::contains(deny_list, addr)) {
+            table::remove(deny_list, addr);
+            
+            event::emit(DenyListStatusChanged {
+                collection_id,
+                address: addr,
+                is_denied: false,
+                changed_by: sender
+            });
+        };
+        
+        i = i + 1;
+    };
+}
+
 
 public fun has_deny_list(collection_cap: &CollectionCap): bool {
     df::exists_(&collection_cap.id, DenyListKey {})  // Updated to use new DenyListKey
@@ -618,68 +870,6 @@ public fun emit_deny_list_status(
     });
 }
 
-    // Transfer a token
-    public entry fun transfer_token(
-    token: NFT,
-    recipient: address,
-    collection_cap: &CollectionCap,
-    sender_balance: &mut UserBalance,
-    ctx: &mut TxContext
-) {
-    let sender = tx_context::sender(ctx);
-
-    // Check deny list restrictions
-    check_deny_list_restrictions(collection_cap, sender);
-    check_deny_list_restrictions(collection_cap, recipient);
-
-    // Get token ID before any moves
-    let token_id = object::uid_to_inner(&token.id);
-
-    // Log initial state
-    log_debug_event(b"Transfer attempt - Initial State", &token, sender, recipient);
-
-    // Check deny list using collection_cap
-    assert!(!is_denied(collection_cap, sender), 3);
-    assert!(!is_denied(collection_cap, recipient), 4);
-
-    log_debug_event(b"Deny list checks passed", &token, sender, recipient);
-
-    // Update sender's balance
-    assert!(sender_balance.collection_id == token_id, 0);
-    sender_balance.balance = sender_balance.balance - 1;
-
-    // Create recipient's balance
-    let recipient_balance = UserBalance {
-        id: object::new(ctx),
-        collection_id: sender_balance.collection_id,
-        balance: 1
-    };
-    transfer::transfer(recipient_balance, recipient);
-
-    // Emit transfer event (without royalty)
-    event::emit(TransferEvent {
-        from: sender,
-        to: recipient,
-        id: token_id,
-        amount: 1,
-        royalty: 0,
-        asset_id: token.asset_id,
-    });
-
-    // Log final state before transfer
-    log_debug_event(b"Pre-transfer state - Final log", &token, sender, recipient);
-
-    // Perform the transfer
-    transfer::public_transfer(token, recipient);
-
-    // Emit completion event
-    event::emit(DebugEvent {
-        message: string::utf8(b"Transfer completed"),
-        token_id,
-        sender,
-        recipient,
-    });
-}
 
 public fun get_deny_list_status(
     collection_cap: &CollectionCap,
@@ -703,7 +893,7 @@ public fun get_deny_list_size_safe(collection_cap: &CollectionCap): u64 {
 
 
 // Helper function to check if address can receive tokens
-public fun can_receive_tokens(
+public fun can_receive_art20(
     collection_cap: &CollectionCap,
     addr: address
 ): bool {
@@ -716,23 +906,14 @@ public fun validate_transfer(
     from: address,
     to: address
 ) {
-    assert!(can_receive_tokens(collection_cap, from), E_ADDRESS_DENIED);
-    assert!(can_receive_tokens(collection_cap, to), E_ADDRESS_DENIED);
+    assert!(can_receive_art20(collection_cap, from), E_ADDRESS_DENIED);
+    assert!(can_receive_art20(collection_cap, to), E_ADDRESS_DENIED);
 }
 
 
-// Helper function for logging debug events
-fun log_debug_event(message: vector<u8>, token: &NFT, sender: address, recipient: address) {
-    event::emit(DebugEvent {
-        message: string::utf8(message),
-        token_id: object::uid_to_inner(&token.id),
-        sender: sender,
-        recipient: recipient,
-    });
-}
 
 // Update batch_transfer_tokens
-public entry fun batch_transfer_tokens(
+public entry fun transfer_art20(
     mut tokens: vector<NFT>,
     recipients: vector<address>,
     collection_cap: &CollectionCap,
@@ -849,7 +1030,7 @@ public entry fun batch_transfer_tokens(
 
 
 // Modified burn_token to handle multiple balances
-public entry fun burn_token(
+public entry fun burn_art20(
     token: NFT,
     collection_cap: &mut CollectionCap,
     user_balances: vector<UserBalance>,
@@ -928,7 +1109,7 @@ public entry fun burn_token(
 
 
     // Batch transfer function
-   public entry fun batch_burn_tokens(
+   public entry fun batch_burn_art20(
     mut tokens: vector<NFT>,
     collection_cap: &mut CollectionCap,
     mut user_balances: vector<UserBalance>,
@@ -972,7 +1153,7 @@ public entry fun burn_token(
         assert!(balance_updated, E_INSUFFICIENT_BALANCE);
 
         // Burn the token
-        burn_single_token(token, collection_cap, ctx);
+        burn_single_art20(token, collection_cap, ctx);
 
         i = i + 1;
     };
@@ -996,7 +1177,7 @@ public entry fun burn_token(
 }
 
 
-fun burn_single_token(
+fun burn_single_art20(
     token: NFT,
     collection_cap: &mut CollectionCap,
     ctx: &TxContext
@@ -1089,8 +1270,121 @@ public entry fun batch_update_token_logo_uri(
     vector::destroy_empty(tokens);
 }
 
+// Single NFT logo URI update
+public entry fun update_art20_image_uri_by_asset_id(
+    collection_cap: &CollectionCap,
+    mut nfts: vector<NFT>,
+    asset_id: u64,
+    new_logo_uri: vector<u8>,
+    ctx: &mut TxContext
+) {
+    let sender = tx_context::sender(ctx);
+    let collection_id = get_collection_cap_id(collection_cap);
+    let mut updated_nfts = vector::empty<NFT>();
+    let nft_count = vector::length(&nfts);
+    let mut i = 0;
+    let mut found = false;
+
+    while (i < nft_count) {
+        let mut token = vector::pop_back(&mut nfts);
+        
+        if (token.collection_id == collection_id && token.asset_id == asset_id && !found) {
+            assert!(sender == token.creator, E_NOT_CREATOR);
+            assert!(token.is_mutable && collection_cap.is_mutable, E_TOKEN_NOT_MUTABLE); // Check both mutability flags
+            assert!(!token.metadata_frozen, E_METADATA_FROZEN);
+
+            token.logo_uri = url::new_unsafe_from_bytes(new_logo_uri);
+
+            event::emit(LogoURIUpdateEvent {
+                id: object::uid_to_inner(&token.id),
+                artinals_id: token.artinals_id,
+                new_logo_uri: token.logo_uri,
+            });
+
+            found = true;
+        };
+        vector::push_back(&mut updated_nfts, token);
+        i = i + 1;
+    };
+
+    assert!(found, ASSET_ID_NOT_FOUND);
+
+    // Return NFTs to sender
+    while (!vector::is_empty(&updated_nfts)) {
+        let token = vector::pop_back(&mut updated_nfts);
+        transfer::public_transfer(token, sender);
+    };
+    
+    vector::destroy_empty(nfts);
+    vector::destroy_empty(updated_nfts);
+}
+
+// Batch NFT logo URI update
+public entry fun batch_update_art20_image_uri_by_asset_ids(
+    collection_cap: &CollectionCap,
+    mut nfts: vector<NFT>,
+    asset_ids: vector<u64>,
+    new_logo_uris: vector<vector<u8>>,
+    ctx: &mut TxContext
+) {
+    let sender = tx_context::sender(ctx);
+    let collection_id = get_collection_cap_id(collection_cap);
+    let mut updated_nfts = vector::empty<NFT>();
+    
+    // Validate inputs
+    let asset_count = vector::length(&asset_ids);
+    assert!(asset_count == vector::length(&new_logo_uris), E_MISMATCH_TOKENS_AND_URIS);
+    assert!(asset_count > 0 && asset_count <= MAX_BATCH_SIZE, E_INVALID_BATCH_SIZE);
+
+    let mut i = 0;
+    while (i < asset_count) {
+        let asset_id = *vector::borrow(&asset_ids, i);
+        let new_logo_uri = vector::borrow(&new_logo_uris, i);
+        let mut found = false;
+
+        while (!vector::is_empty(&nfts)) {  // Removed &mut as we're popping
+            let mut token = vector::pop_back(&mut nfts);
+            
+            if (token.collection_id == collection_id && token.asset_id == asset_id && !found) {
+                assert!(sender == token.creator, E_NOT_CREATOR);
+                assert!(token.is_mutable && collection_cap.is_mutable, E_TOKEN_NOT_MUTABLE);
+                assert!(!token.metadata_frozen, E_METADATA_FROZEN);
+
+                token.logo_uri = url::new_unsafe_from_bytes(*new_logo_uri);
+
+                event::emit(LogoURIUpdateEvent {
+                    id: object::uid_to_inner(&token.id),
+                    artinals_id: token.artinals_id,
+                    new_logo_uri: token.logo_uri,
+                });
+
+                found = true;
+            };
+            vector::push_back(&mut updated_nfts, token);
+        };
+
+        // Move NFTs back to nfts vector for next iteration
+        while (!vector::is_empty(&updated_nfts)) {  // Removed &mut as we're popping
+            let token = vector::pop_back(&mut updated_nfts);
+            vector::push_back(&mut nfts, token);
+        };
+
+        assert!(found, ASSET_ID_NOT_FOUND);
+        i = i + 1;
+    };
+
+    // Transfer all NFTs back to sender
+    while (!vector::is_empty(&nfts)) {  // Removed &mut as we're popping
+        let token = vector::pop_back(&mut nfts);
+        transfer::public_transfer(token, sender);
+    };
+
+    vector::destroy_empty(nfts);
+    vector::destroy_empty(updated_nfts);
+}
+
    
-public entry fun transfer_existing_nfts_by_quantity(
+public entry fun transfer_art20_in_quantity(
     mut tokens: vector<NFT>,
     recipient: address, 
     quantity: u64, 
@@ -1211,6 +1505,116 @@ public entry fun transfer_existing_nfts_by_quantity(
     });
 }
 
+public entry fun transfer_art20_by_asset_ids(
+    collection_cap: &CollectionCap,
+    mut nfts: vector<NFT>,
+    mut user_balances: vector<UserBalance>,
+    asset_ids: vector<u64>,
+    recipient: address,
+    ctx: &mut TxContext
+) {
+    let sender = tx_context::sender(ctx);
+    let collection_id = get_collection_cap_id(collection_cap);
+    let asset_count = vector::length(&asset_ids);
+
+    // Validate recipient is not in the deny list
+    check_deny_list_restrictions(collection_cap, recipient);
+
+    // Initialize vectors for transfer events
+    let mut token_ids = vector::empty<ID>();
+    let mut amounts = vector::empty<u64>();
+
+    // Process each asset ID
+    let mut i = 0;
+    while (i < asset_count) {
+        let asset_id = *vector::borrow(&asset_ids, i);
+
+        // Get the NFT and its owner
+        let (mut nft_id_opt, mut owner_opt) = get_nft_by_asset_id(collection_cap, &nfts, asset_id);
+
+        // Ensure the NFT exists and is owned by the sender
+        assert!(option::is_some(&nft_id_opt), ASSET_ID_NOT_FOUND);
+        assert!(option::is_some(&owner_opt), E_NOT_OWNER);
+        let nft_id = option::extract(&mut nft_id_opt);
+        let owner = option::extract(&mut owner_opt);
+        assert!(owner == sender, E_NOT_OWNER);
+
+        // Locate and transfer the NFT
+        let nft_count = vector::length(&nfts);
+        let mut j = 0;
+        let mut found = false;
+
+        while (j < nft_count) {
+            let token = vector::borrow_mut(&mut nfts, j);
+            if (token.collection_id == collection_id && token.asset_id == asset_id && !found) {
+                // Update user balances
+                let mut balance_found = false;
+                let mut k = 0;
+                while (k < vector::length(&user_balances)) {
+                    let balance = vector::borrow_mut(&mut user_balances, k);
+                    if (balance.collection_id == collection_id && balance.balance > 0) {
+                        balance.balance = safe_sub(balance.balance, 1);
+                        balance_found = true;
+                        break
+                    };
+                    k = k + 1;
+                };
+                assert!(balance_found, E_INSUFFICIENT_BALANCE);
+
+                // Add event details
+                vector::push_back(&mut token_ids, nft_id);
+                vector::push_back(&mut amounts, 1);
+
+                // Transfer the token to the recipient
+                let nft = vector::remove(&mut nfts, j); // Explicitly remove the NFT
+                transfer::public_transfer(nft, recipient);
+
+                found = true;
+                break;
+            };
+            j = j + 1;
+        };
+        assert!(found, ASSET_ID_NOT_FOUND);
+        i = i + 1;
+    };
+
+    // Emit batch transfer event
+    event::emit(BatchTransferEvent {
+        from: sender,
+        recipients: vector[recipient],
+        token_ids,
+        amounts,
+        collection_id,
+        timestamp: tx_context::epoch(ctx),
+    });
+
+    // Process user balances and clean up empty ones
+    let mut k = 0;
+    while (k < vector::length(&user_balances)) {
+        let balance = vector::borrow_mut(&mut user_balances, k);
+        if (balance.balance == 0) {
+            let removed_balance = vector::remove(&mut user_balances, k); // Explicitly remove the empty balance
+            cleanup_empty_balance(removed_balance);
+        } else {
+            k = k + 1;
+        }
+    };
+
+    // Transfer remaining balances back to the sender
+    while (!vector::is_empty(&user_balances)) {
+        let balance = vector::pop_back(&mut user_balances);
+        transfer::transfer(balance, sender);
+    };
+
+    // Clean up vectors
+    vector::destroy_empty(nfts);
+    vector::destroy_empty(user_balances);
+    vector::destroy_empty(token_ids);
+    vector::destroy_empty(amounts);
+}
+
+
+
 public fun get_user_balance(user_balance: &UserBalance): u64 {
     user_balance.balance
 }
@@ -1228,6 +1632,196 @@ public fun create_user_balance(
     }
 
 // View functions
+
+public fun get_holder_info(
+    nfts: &vector<NFT>,
+    collection_cap: &CollectionCap,
+    user_balances: &vector<UserBalance>,
+    addr: address
+): (
+    // Collection Info
+    ID, // collection_id
+    address, // creator
+    String, // collection name
+    String, // collection description
+    u64, // current supply
+    u64, // max supply
+    bool, // is_mutable
+    // Holder Info
+    u64, // total balance
+    bool, // is denied
+    bool, // has deny list
+    bool, // deny list authority active
+    u64,  // total deny list size
+    vector<ID>, // nft_ids
+    vector<u64>, // asset_ids
+    vector<String>, // nft_names
+    vector<String>, // nft_descriptions
+    vector<Url>, // nft_uris
+    vector<Url>, // nft_logo_uris
+    vector<bool>, // nft_mutability_status
+    vector<bool> // nft_frozen_status
+) {
+    // Get collection info
+    let collection_id = get_collection_cap_id(collection_cap);
+    
+    // Calculate total balance
+    let mut total_balance = 0;
+    let mut i = 0;
+    let n = vector::length(user_balances);
+    while (i < n) {
+        let balance = vector::borrow(user_balances, i);
+        if (get_user_balance_collection_id(balance) == collection_id) {
+            total_balance = total_balance + get_user_balance_amount(balance);
+        };
+        i = i + 1;
+    };
+
+    // Get deny list information
+    let has_deny_list = has_deny_list(collection_cap);
+    let deny_list_authority = has_deny_list_authority(collection_cap);
+    let is_denied = is_denied(collection_cap, addr);
+    let deny_list_size = if (has_deny_list) {
+        deny_list_size(collection_cap)
+    } else {
+        0
+    };
+
+    // Initialize vectors for NFT details
+    let mut nft_ids = vector::empty<ID>();
+    let mut asset_ids = vector::empty<u64>();
+    let mut nft_names = vector::empty<String>();
+    let mut nft_descriptions = vector::empty<String>();
+    let mut nft_uris = vector::empty<Url>();
+    let mut nft_logo_uris = vector::empty<Url>();
+    let mut nft_mutability = vector::empty<bool>();
+    let mut nft_frozen = vector::empty<bool>();
+
+    // Collect NFT details
+    let mut j = 0;
+    let nft_count = vector::length(nfts);
+    while (j < nft_count) {
+        let nft = vector::borrow(nfts, j);
+        if (nft.collection_id == collection_id) {
+            vector::push_back(&mut nft_ids, object::uid_to_inner(&nft.id));
+            vector::push_back(&mut asset_ids, nft.asset_id);
+            vector::push_back(&mut nft_names, *&nft.name);
+            vector::push_back(&mut nft_descriptions, *&nft.description);
+            vector::push_back(&mut nft_uris, nft.uri);
+            vector::push_back(&mut nft_logo_uris, nft.logo_uri);
+            vector::push_back(&mut nft_mutability, nft.is_mutable);
+            vector::push_back(&mut nft_frozen, nft.metadata_frozen);
+        };
+        j = j + 1;
+    };
+
+    (
+        // Collection Info
+        collection_id,
+        collection_cap.creator,
+        collection_cap.name,
+        collection_cap.description,
+        collection_cap.current_supply,
+        collection_cap.max_supply,
+        collection_cap.is_mutable,
+        // Holder Info
+        total_balance,
+        is_denied,
+        has_deny_list,
+        deny_list_authority,
+        deny_list_size,
+        nft_ids,
+        asset_ids,
+        nft_names,
+        nft_descriptions,
+        nft_uris,
+        nft_logo_uris,
+        nft_mutability,
+        nft_frozen
+    )
+}
+
+public fun get_nfts_by_asset_ids(
+    collection_cap: &CollectionCap,
+    nfts: &vector<NFT>,
+    asset_ids: vector<u64>
+): (
+    vector<ID>, // nft_object_ids
+    vector<address>, // owner_addresses
+    vector<u64>, // found_asset_ids
+    vector<u64> // not_found_asset_ids
+) {
+    let collection_id = get_collection_cap_id(collection_cap);
+    
+    // Initialize return vectors
+    let mut nft_object_ids = vector::empty<ID>();
+    let mut owner_addresses = vector::empty<address>();
+    let mut found_asset_ids = vector::empty<u64>();
+    let mut not_found_asset_ids = vector::empty<u64>();
+
+    // Process each requested asset ID
+    let asset_count = vector::length(&asset_ids);
+    let mut i = 0;
+    while (i < asset_count) {
+        let asset_id = *vector::borrow(&asset_ids, i);
+        let mut found = false;
+        
+        // Search through NFTs for matching asset ID
+        let nft_count = vector::length(nfts);
+        let mut j = 0;
+        while (j < nft_count) {
+            let nft = vector::borrow(nfts, j);
+            
+            // Check if NFT belongs to collection and matches asset ID
+            if (nft.collection_id == collection_id && nft.asset_id == asset_id) {
+                vector::push_back(&mut nft_object_ids, object::uid_to_inner(&nft.id));
+                vector::push_back(&mut owner_addresses, nft.creator);
+                vector::push_back(&mut found_asset_ids, asset_id);
+                found = true;
+                break
+            };
+            j = j + 1;
+        };
+
+        // Track unfound asset IDs
+        if (!found) {
+            vector::push_back(&mut not_found_asset_ids, asset_id);
+        };
+
+        i = i + 1;
+    };
+
+    (
+        nft_object_ids,
+        owner_addresses,
+        found_asset_ids,
+        not_found_asset_ids
+    )
+}
+
+// Single asset ID lookup version
+public fun get_nft_by_asset_id(
+    collection_cap: &CollectionCap,
+    nfts: &vector<NFT>,
+    asset_id: u64
+): (Option<ID>, Option<address>) {
+    let collection_id = get_collection_cap_id(collection_cap);
+    
+    let nft_count = vector::length(nfts);
+    let mut i = 0;
+    while (i < nft_count) {
+        let nft = vector::borrow(nfts, i);
+        if (nft.collection_id == collection_id && nft.asset_id == asset_id) {
+            return (
+                option::some(object::uid_to_inner(&nft.id)),
+                option::some(nft.creator)
+            )
+        };
+        i = i + 1;
+    };
+
+    (option::none(), option::none())
+}
 
 // Helper function to check if NFT exists in sale
 
@@ -1266,17 +1860,17 @@ public fun get_collection_id(nft: &NFT): ID {
         get_collection_cap_id(collection_cap) == get_user_balance_collection_id(user_balance)
     }
 
-    // Add function to update collection supply
+    // Function to update collection supply
     public fun update_collection_supply(cap: &mut CollectionCap, new_supply: u64) {
         cap.current_supply = new_supply;
     }
 
-    // Add getter for collection current supply if not already present
+    // Getter for collection current supply if not already present
     public fun get_collection_current_supply(cap: &CollectionCap): u64 {
         cap.current_supply
     }
 
-    // Make sure these getters are available
+    // Getters 
     public fun get_user_balance_amount(balance: &UserBalance): u64 {
         balance.balance
     }
@@ -1288,5 +1882,18 @@ public fun get_collection_id(nft: &NFT): ID {
     public fun get_nft_id(nft: &NFT): ID {
         object::uid_to_inner(&nft.id)
     }
+
+    /// Getter for the `asset_id` field.
+    public fun get_nft_asset_id(nft: &NFT): u64 {
+        nft.asset_id
+    }
+
+    public fun cleanup_empty_balance(balance: UserBalance) {
+    assert!(get_user_balance_amount(&balance) == 0, E_INSUFFICIENT_BALANCE);
+    let UserBalance { id, collection_id: _, balance: _ } = balance;
+    object::delete(id);
+}
+
+
 
 }

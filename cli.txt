@@ -5,12 +5,12 @@
  # mint_token:
 
 sui client call \
---package 0xf56f5d9a60d6d87b1b9b2278c46146429b9b4bee10889894ddb913296ef1d67a \
+--package 0x6fed99e9ef7cfab980ea60539dccb12db1bfd639ee5e8c40245fab9fba34b3df \
 --module ART20 \
 --function mint_token \
---args "TestToken" "This is a test NFT token." \ 10 20 \
+--args "TestToken" "This is a test NFT token." \ 25 50 \
 "https://akrd.net/_fcQKwSNjB7GL2fr_hdvdkv-RP_74abG9BO9DTig9bM" "https://amaranth-many-armadillo-855.mypinata.cloud/ipfs/QmS9eZM5nXaEyM7uie3az7xvmmmU6BzJ6suYEZPaFB1QWg" true true \
-0x1b28a38a5cc55d34626878abb268c9fa409994efc2d540e8a37ab0a43e6b87f0 \
+0x2cf0c2c233dcb73f4c13f7c98f2edc84b293e25425822266131622d8d9266a92 \
 --gas-budget 100000000
 
 mint additional:
@@ -86,6 +86,20 @@ sui client call \
 
 
 
+#purchase"
+
+sui client call \
+    --package 0xb1c3adb5646538467eef4785b6abf24f13ebc66b9f9e0fa925280491894e8692 \
+    --module SALE \
+    --function purchase_nfts \
+    --type-args "0xbf8491acb9867831f343a205083dc6fb88bd918d737d828f6cabe55da4e7e22a::my_coin::MY_COIN" \
+    --args \
+        "0x4440b8a22efdbc8da017c491618b7890aa5ae64b07234bf6fa4f5aee628b6e61" \  # Sale ID
+        "0x11603e850b7d66fce3a6b78bad07a67681c7d4f4a829c30ac858f4acbbcc3841" \                                                    # Payment coin object ID
+        "[2]" \                                                                    # Vector of asset IDs
+        "0x4440b8a22efdbc8da017c491618b7890aa5ae64b07234bf6fa4f5aee628b6e61" \  # CollectionCap ID
+    --gas-budget 100000000
+
 upgrade:
 
-sui client upgrade --upgrade-capability 0xd854645b054372bea0c43321143da0e5a49f47ad9b0e4be5c708c63845db6d7b --gas-budget 1000000000 --skip-dependency-verification
+sui client upgrade --upgrade-capability 0x02d37053a67450c0ff7de11a71f6c7d4a4d053e0313d975d75c3f25fd84e748c --gas-budget 1000000000 --skip-dependency-verification
