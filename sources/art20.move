@@ -642,6 +642,207 @@ public entry fun batch_update_metadata(
     vector::destroy_empty(tokens);
 }
 
+// Batch burn tokens by asset IDs
+public entry fun batch_burn_art20_by_asset_ids(
+    collection_cap: &mut CollectionCap,
+    mut nfts: vector<NFT>,
+    mut user_balances: vector<UserBalance>,
+    asset_ids: vector<u64>,
+    ctx: &mut TxContext
+) {
+    let sender = tx_context::sender(ctx);
+    let collection_id = get_collection_cap_id(collection_cap);
+    let asset_count = vector::length(&asset_ids);
+    
+    // Validate batch size
+    assert!(asset_count > 0 && asset_count <= MAX_BATCH_SIZE, E_INVALID_BATCH_SIZE);
+    assert!(collection_cap.current_supply >= asset_count, E_NO_TOKENS_TO_BURN);
+
+    // Calculate total available balance
+    let mut total_available = 0u64;
+    let mut i = 0;
+    let n = vector::length(&user_balances);
+    while (i < n) {
+        let balance = vector::borrow(&user_balances, i);
+        total_available = safe_add(total_available, balance.balance);
+        i = i + 1;
+    };
+    assert!(total_available >= asset_count, E_INSUFFICIENT_BALANCE);
+
+    // Process each asset ID
+    let mut i = 0;
+    while (i < asset_count) {
+        let asset_id = *vector::borrow(&asset_ids, i);
+        let mut nft_found = false;
+        let mut j = 0;
+        let nft_count = vector::length(&nfts);
+
+        // Find and process the NFT with matching asset_id
+        while (j < nft_count && !nft_found) {
+            let nft = vector::borrow(&nfts, j);
+            if (nft.collection_id == collection_id && nft.asset_id == asset_id) {
+                assert!(sender == nft.creator, E_NOT_OWNER);
+                
+                // Update balances
+                let mut balance_updated = false;
+                let mut k = 0;
+                while (k < vector::length(&user_balances)) {
+                    let balance = vector::borrow_mut(&mut user_balances, k);
+                    if (balance.balance > 0 && balance.collection_id == collection_id) {
+                        balance.balance = safe_sub(balance.balance, 1);
+                        balance_updated = true;
+                        break
+                    };
+                    k = k + 1;
+                };
+                assert!(balance_updated, E_INSUFFICIENT_BALANCE);
+
+                // Remove and burn the NFT
+                let nft = vector::remove(&mut nfts, j);
+                collection_cap.current_supply = safe_sub(collection_cap.current_supply, 1);
+                
+                // Emit burn event
+                event::emit(BurnEvent {
+                    owner: sender,
+                    id: object::uid_to_inner(&nft.id),
+                    amount: 1,
+                });
+
+                let NFT { 
+                    id, 
+                    artinals_id: _,
+                    creator: _, 
+                    name: _, 
+                    description: _, 
+                    uri: _, 
+                    logo_uri: _, 
+                    asset_id: _, 
+                    max_supply: _, 
+                    is_mutable: _, 
+                    metadata_frozen: _, 
+                    collection_id: _ 
+                } = nft;
+                object::delete(id);
+                
+                nft_found = true;
+                break;
+            };
+            j = j + 1;
+        };
+        assert!(nft_found, ASSET_ID_NOT_FOUND);
+        i = i + 1;
+    };
+
+    // Process remaining balances
+    let mut k = 0;
+    while (k < vector::length(&user_balances)) {
+        let balance = vector::borrow(&user_balances, k);
+        if (get_user_balance_amount(balance) == 0) {
+            let removed_balance = vector::remove(&mut user_balances, k);
+            cleanup_empty_balance(removed_balance);
+        } else {
+            k = k + 1;
+        };
+    };
+
+    // Return remaining NFTs and balances
+    while (!vector::is_empty(&nfts)) {
+        let nft = vector::pop_back(&mut nfts);
+        transfer::public_transfer(nft, sender);
+    };
+
+    while (!vector::is_empty(&user_balances)) {
+        let balance = vector::pop_back(&mut user_balances);
+        transfer::transfer(balance, sender);
+    };
+
+    vector::destroy_empty(nfts);
+    vector::destroy_empty(user_balances);
+}
+
+// Batch update metadata by asset IDs
+public entry fun batch_update_metadata_by_asset_ids(
+    collection_cap: &CollectionCap,
+    mut nfts: vector<NFT>,
+    asset_ids: vector<u64>,
+    new_name: Option<String>,          // Removed mut
+    new_description: Option<String>,    // Removed mut
+    new_uri: Option<vector<u8>>,       // Removed mut
+    new_logo_uri: Option<vector<u8>>,  // Removed mut
+    ctx: &mut TxContext
+) {
+    let sender = tx_context::sender(ctx);
+    let collection_id = get_collection_cap_id(collection_cap);
+    let asset_count = vector::length(&asset_ids);
+    
+    // Validate batch size
+    assert!(asset_count > 0 && asset_count <= MAX_BATCH_SIZE, E_INVALID_BATCH_SIZE);
+    
+    let mut updated_nfts = vector::empty<NFT>();
+    let mut i = 0;
+    
+    // Process each asset ID
+    while (i < asset_count) {
+        let asset_id = *vector::borrow(&asset_ids, i);
+        let mut found = false;
+
+        while (!vector::is_empty(&nfts)) {
+            let mut nft = vector::pop_back(&mut nfts);
+            
+            if (!found && nft.collection_id == collection_id && nft.asset_id == asset_id) {
+                // Verify permissions
+                assert!(nft.is_mutable && collection_cap.is_mutable, E_TOKEN_NOT_MUTABLE);
+                assert!(sender == nft.creator, E_NOT_CREATOR);
+                assert!(!nft.metadata_frozen, E_METADATA_FROZEN);
+
+                // Update metadata fields if provided - use borrow instead of extract
+                if (option::is_some(&new_name)) {
+                    nft.name = *option::borrow(&new_name);
+                };
+
+                if (option::is_some(&new_description)) {
+                    nft.description = *option::borrow(&new_description);
+                };
+
+                if (option::is_some(&new_uri)) {
+                    nft.uri = url::new_unsafe_from_bytes(*option::borrow(&new_uri));
+                };
+
+                if (option::is_some(&new_logo_uri)) {
+                    nft.logo_uri = url::new_unsafe_from_bytes(*option::borrow(&new_logo_uri));
+                };
+
+                event::emit(MetadataUpdateEvent {
+                    id: object::uid_to_inner(&nft.id),
+                    new_name: nft.name,
+                    new_description: nft.description,
+                });
+
+                found = true;
+            };
+
+            vector::push_back(&mut updated_nfts, nft);
+        };
+
+        // Move NFTs back for next iteration
+        while (!vector::is_empty(&updated_nfts)) {
+            let nft = vector::pop_back(&mut updated_nfts);
+            vector::push_back(&mut nfts, nft);
+        };
+
+        assert!(found, ASSET_ID_NOT_FOUND);
+        i = i + 1;
+    };
+
+    // Return NFTs to sender
+    while (!vector::is_empty(&nfts)) {
+        let nft = vector::pop_back(&mut nfts);
+        transfer::public_transfer(nft, sender);
+    };
+
+    vector::destroy_empty(nfts);
+    vector::destroy_empty(updated_nfts);
+}
 
 
 public entry fun batch_freeze_metadata(
