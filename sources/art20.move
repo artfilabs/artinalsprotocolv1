@@ -583,15 +583,14 @@ public entry fun update_metadata_by_asset_id(
 
 public entry fun batch_update_metadata(
     collection_cap: &CollectionCap,
-    mut tokens: vector<NFT>, // Pass vector for batch operations or single token wrapped in vector
-    mut new_name: Option<String>,
-    mut new_description: Option<String>,
-    mut new_uri: Option<vector<u8>>,
-    mut new_logo_uri: Option<vector<u8>>,
+    mut tokens: vector<NFT>,
+    new_name: Option<String>,          // Remove mut
+    new_description: Option<String>,    // Remove mut
+    new_uri: Option<vector<u8>>,       // Remove mut 
+    new_logo_uri: Option<vector<u8>>,  // Remove mut
     ctx: &mut TxContext
 ) {
     let batch_size = vector::length(&tokens);
-
     let sender = tx_context::sender(ctx);
     let collection_id = get_collection_cap_id(collection_cap);
 
@@ -605,35 +604,26 @@ public entry fun batch_update_metadata(
         assert!(!token.metadata_frozen, E_METADATA_FROZEN);
         assert!(sender == token.creator, E_NOT_CREATOR);
 
-        // Update name if provided
+        // Update name if provided - use copy instead of extract
         if (option::is_some(&new_name)) {
-            let name = option::extract(&mut new_name); // Pass mutable reference here
-            assert!(string::length(&name) <= 128, E_INVALID_LENGTH);
-            token.name = name;
+            token.name = *option::borrow(&new_name); // Borrow and copy instead of extract
         };
 
         // Update description if provided
         if (option::is_some(&new_description)) {
-            let description = option::extract(&mut new_description); // Pass mutable reference here
-            assert!(string::length(&description) <= 1000, E_INVALID_LENGTH);
-            token.description = description;
+            token.description = *option::borrow(&new_description);
         };
 
         // Update URI if provided
         if (option::is_some(&new_uri)) {
-            let uri = option::extract(&mut new_uri); // Pass mutable reference here
-            assert!(vector::length(&uri) <= 256, E_INVALID_LENGTH);
-            token.uri = url::new_unsafe_from_bytes(uri);
+            token.uri = url::new_unsafe_from_bytes(*option::borrow(&new_uri));
         };
 
-        // Update logo URI if provided
+        // Update logo URI if provided 
         if (option::is_some(&new_logo_uri)) {
-            let logo_uri = option::extract(&mut new_logo_uri); // Pass mutable reference here
-            assert!(vector::length(&logo_uri) <= 256, E_INVALID_LENGTH);
-            token.logo_uri = url::new_unsafe_from_bytes(logo_uri);
+            token.logo_uri = url::new_unsafe_from_bytes(*option::borrow(&new_logo_uri));
         };
 
-        // Emit metadata update event
         event::emit(MetadataUpdateEvent {
             id: object::uid_to_inner(&token.id),
             new_name: token.name,
@@ -643,13 +633,12 @@ public entry fun batch_update_metadata(
         i = i + 1;
     };
 
-    // Transfer the updated tokens back to the sender
+    // Return the updated tokens to sender
     while (!vector::is_empty(&tokens)) {
         let token = vector::pop_back(&mut tokens);
         transfer::public_transfer(token, sender);
     };
 
-    // Destroy the empty vector
     vector::destroy_empty(tokens);
 }
 
