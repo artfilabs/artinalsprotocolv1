@@ -102,4 +102,4 @@ sui client call \
 
 upgrade:
 
-sui client upgrade --upgrade-capability 0x02d37053a67450c0ff7de11a71f6c7d4a4d053e0313d975d75c3f25fd84e748c --gas-budget 1000000000 --skip-dependency-verification
+sui client upgrade --upgrade-capability 0x032554d61d310663dfe62fc3a64b5698e91d06bd7f5f7248346bee66f0840956 --gas-budget 1000000000 --skip-dependency-verification

@@ -128,7 +128,17 @@ public struct NFTMintedEvent has copy, drop {
     asset_id: u64,
 }
 
-
+public struct CollectionCreatedEvent has copy, drop {
+    collection_id: ID,
+    creator: address,
+    name: String,
+    description: String,
+    initial_supply: u64,
+    max_supply: u64,
+    is_mutable: bool,
+    has_deny_list_authority: bool,
+    timestamp: u64
+}
 
     // Define event for burning NFTs
     public struct BurnEvent has copy, drop {
@@ -267,8 +277,8 @@ fun safe_sub(a: u64, b: u64): u64 {
     // Check counter overflow
     assert!(counter.last_id <= MAX_U64 - initial_supply, E_OVERFLOW);
 
-    assert!(initial_supply > 0, 1);
-    assert!(max_supply == 0 || initial_supply <= max_supply, 2);
+    // assert!(initial_supply > 0, 1);
+    // assert!(max_supply == 0 || initial_supply <= max_supply, 2);
 
     counter.last_id = safe_add(counter.last_id, 1);
 
@@ -285,6 +295,19 @@ fun safe_sub(a: u64, b: u64): u64 {
         is_mutable,
         has_deny_list_authority,
     };
+
+    // Emit collection creation event
+    event::emit(CollectionCreatedEvent {
+        collection_id: object::uid_to_inner(&collection_cap.id),
+        creator: tx_context::sender(ctx),
+        name: string::utf8(name),
+        description: string::utf8(description),
+        initial_supply,
+        max_supply,
+        is_mutable,
+        has_deny_list_authority,
+        timestamp: tx_context::epoch(ctx)
+    });
 
     // Initialize deny list as dynamic field with mutable collection_cap
     df::add(
@@ -345,6 +368,7 @@ fun safe_sub(a: u64, b: u64): u64 {
     transfer::share_object(collection_cap);
     transfer::transfer(user_balance, tx_context::sender(ctx));
 }
+
 
 
     // New function to mint additional tokens (only for mintable NFTs)
@@ -2084,6 +2108,129 @@ public fun get_collection_id(nft: &NFT): ID {
     object::delete(id);
 }
 
+// Basic getter that only requires CollectionCaps
+public fun get_all_collection_ids(collection_caps: &vector<CollectionCap>): vector<ID> {
+    let mut collection_ids = vector::empty<ID>();
+    let cap_count = vector::length(collection_caps);
+    let mut i = 0;
+    
+    while (i < cap_count) {
+        let cap = vector::borrow(collection_caps, i);
+        vector::push_back(&mut collection_ids, get_collection_cap_id(cap));
+        i = i + 1;
+    };
+    
+    collection_ids
+}
 
+// Comprehensive getter with all collection details
+public fun get_collections_info(
+    collection_caps: &vector<CollectionCap>
+): (
+    vector<ID>, // collection_ids
+    vector<address>, // creators
+    vector<String>, // names
+    vector<String>, // descriptions
+    vector<Url>, // uris
+    vector<Url>, // logo_uris
+    vector<u64>, // current_supplies
+    vector<u64>, // max_supplies
+    vector<bool>, // mutability_flags
+    vector<bool>  // deny_list_authorities
+) {
+    let mut collection_ids = vector::empty<ID>();
+    let mut creators = vector::empty<address>();
+    let mut names = vector::empty<String>();
+    let mut descriptions = vector::empty<String>();
+    let mut uris = vector::empty<Url>();
+    let mut logo_uris = vector::empty<Url>();
+    let mut current_supplies = vector::empty<u64>();
+    let mut max_supplies = vector::empty<u64>();
+    let mut mutability_flags = vector::empty<bool>();
+    let mut deny_list_authorities = vector::empty<bool>();
+    
+    let cap_count = vector::length(collection_caps);
+    let mut i = 0;
+    
+    while (i < cap_count) {
+        let cap = vector::borrow(collection_caps, i);
+        
+        vector::push_back(&mut collection_ids, get_collection_cap_id(cap));
+        vector::push_back(&mut creators, cap.creator);
+        vector::push_back(&mut names, *&cap.name);
+        vector::push_back(&mut descriptions, *&cap.description);
+        vector::push_back(&mut uris, cap.uri);
+        vector::push_back(&mut logo_uris, cap.logo_uri);
+        vector::push_back(&mut current_supplies, cap.current_supply);
+        vector::push_back(&mut max_supplies, cap.max_supply);
+        vector::push_back(&mut mutability_flags, cap.is_mutable);
+        vector::push_back(&mut deny_list_authorities, cap.has_deny_list_authority);
+        
+        i = i + 1;
+    };
+    
+    (
+        collection_ids,
+        creators,
+        names,
+        descriptions,
+        uris,
+        logo_uris,
+        current_supplies,
+        max_supplies,
+        mutability_flags,
+        deny_list_authorities
+    )
+}
+
+// Get details for a specific collection
+public fun get_collection_details(
+    collection_cap: &CollectionCap
+): (
+    ID, // collection_id
+    address, // creator
+    String, // name
+    String, // description
+    Url, // uri
+    Url, // logo_uri
+    u64, // current_supply
+    u64, // max_supply
+    bool, // is_mutable
+    bool, // has_deny_list_authority
+    u64  // deny_list_size
+) {
+    (
+        get_collection_cap_id(collection_cap),
+        collection_cap.creator,
+        *&collection_cap.name,
+        *&collection_cap.description,
+        collection_cap.uri,
+        collection_cap.logo_uri,
+        collection_cap.current_supply,
+        collection_cap.max_supply,
+        collection_cap.is_mutable,
+        collection_cap.has_deny_list_authority,
+        if (has_deny_list(collection_cap)) { deny_list_size(collection_cap) } else { 0 }
+    )
+}
+
+// Additional helper to check if a collection exists
+public fun collection_exists(
+    collection_caps: &vector<CollectionCap>,
+    collection_id: ID
+): bool {
+    let cap_count = vector::length(collection_caps);
+    let mut i = 0;
+    
+    while (i < cap_count) {
+        let cap = vector::borrow(collection_caps, i);
+        if (get_collection_cap_id(cap) == collection_id) {
+            return true
+        };
+        i = i + 1;
+    };
+    
+    false
+}
 
 }
