@@ -140,6 +140,13 @@ public struct CollectionCreatedEvent has copy, drop {
     timestamp: u64
 }
 
+
+public struct MutabilityChangeEvent has copy, drop {    
+    collection_id: ID,
+    is_mutable: bool,
+    timestamp: u64
+}
+
     // Define event for burning NFTs
     public struct BurnEvent has copy, drop {
         owner: address,
@@ -189,7 +196,23 @@ public struct BatchTransferEvent has copy, drop {
 }
 
 
+public struct CollectionMintEvent has copy, drop {
+    collection_id: ID,
+    amount: u64,
+    current_supply: u64,
+    max_supply: u64,
+    creator: address,
+    timestamp: u64,
+}
 
+public struct AdditionalMintEvent has copy, drop {
+    collection_id: ID,
+    amount: u64,
+    new_supply: u64,
+    max_supply: u64,
+    creator: address,
+    timestamp: u64
+}
 
 
 fun safe_add(a: u64, b: u64): u64 {
@@ -309,6 +332,18 @@ fun safe_sub(a: u64, b: u64): u64 {
         timestamp: tx_context::epoch(ctx)
     });
 
+    let collection_id = object::uid_to_inner(&collection_cap.id);
+
+    // Emit collection mint event 
+    event::emit(CollectionMintEvent {
+        collection_id,
+        amount: initial_supply,
+        current_supply: initial_supply,
+        max_supply,
+        creator: tx_context::sender(ctx),
+        timestamp: tx_context::epoch(ctx)
+    });
+
     // Initialize deny list as dynamic field with mutable collection_cap
     df::add(
         &mut collection_cap.id, 
@@ -406,6 +441,7 @@ fun safe_sub(a: u64, b: u64): u64 {
             collection_id,
         };
 
+
         event::emit(TransferEvent {
             from: tx_context::sender(ctx),
             to: tx_context::sender(ctx),
@@ -428,6 +464,16 @@ fun safe_sub(a: u64, b: u64): u64 {
     };
 
     collection_cap.current_supply = collection_cap.current_supply + amount;
+
+    // Emit additional mint event
+    event::emit(AdditionalMintEvent {
+        collection_id,
+        amount,
+        new_supply: collection_cap.current_supply,
+        max_supply: collection_cap.max_supply,
+        creator: collection_cap.creator,
+        timestamp: tx_context::epoch(ctx)
+    });
 }
 
 
@@ -1388,6 +1434,24 @@ public entry fun burn_art20(
     // Clean up vectors
     vector::destroy_empty(tokens);
     vector::destroy_empty(user_balances);
+}
+
+public entry fun toggle_collection_mutability(
+    collection_cap: &mut CollectionCap,
+    ctx: &mut TxContext
+) {
+    // Only creator can toggle
+    assert!(tx_context::sender(ctx) == collection_cap.creator, E_NOT_CREATOR);
+    
+    // Toggle the mutability
+    collection_cap.is_mutable = !collection_cap.is_mutable;
+
+    // Emit the event
+    event::emit(MutabilityChangeEvent {
+        collection_id: object::uid_to_inner(&collection_cap.id),
+        is_mutable: collection_cap.is_mutable,
+        timestamp: tx_context::epoch(ctx)
+    });
 }
 
 
