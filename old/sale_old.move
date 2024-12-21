@@ -30,6 +30,8 @@
 //     const E_PERCENTAGE_SUM_MISMATCH: u64 = 24;
 //     const E_EMPTY_RECIPIENTS: u64 = 25;
 //     const ASSET_ID_NOT_FOUND: u64 = 26;
+//     const E_BALANCE_CREATION_FAILED: u64 = 27;
+//     const E_BALANCE_TRANSFER_FAILED: u64 = 28;
 
 //     // Add maximum limits
 //     const MAX_U64: u64 = 18446744073709551615;
@@ -374,10 +376,8 @@
 //     let mut i = 0;
 //     while (i < purchase_count) {
 //         let asset_id = *vector::borrow(&asset_ids, i);
-
 //         assert!(vector::contains(&sale.asset_ids, &asset_id), E_INVALID_ASSET_ID);
 //         assert!(df::exists_(&sale.id, NFTFieldKey<CURRENCY> { asset_id }), E_INVALID_ASSET_ID);
-
 //         i = i + 1;
 //     };
 
@@ -392,10 +392,22 @@
 //         coin::destroy_zero(payment_mut);
 //     };
 
+//     // Create and transfer UserBalance - NEW ADDITION
+//     let buyer_balance = ART20::create_user_balance(
+//         sale.collection_id,
+//         purchase_count,
+//         ctx
+//     );
+//     assert!(ART20::get_user_balance_amount(&buyer_balance) == purchase_count, E_BALANCE_CREATION_FAILED);
+
+//     assert!(ART20::get_user_balance_collection_id(&buyer_balance) == sale.collection_id, E_BALANCE_TRANSFER_FAILED);
+    
+//     // Transfer the balance object to buyer
+//     transfer::public_transfer(buyer_balance, buyer);
+
 //     // Transfer NFTs to buyer and remove them from sale
 //     while (!vector::is_empty(&asset_ids)) {
 //         let asset_id = vector::pop_back(&mut asset_ids);
-
 //         assert!(df::exists_(&sale.id, NFTFieldKey<CURRENCY> { asset_id }), E_INVALID_ASSET_ID);
 
 //         // Remove the NFT from the dynamic field
@@ -424,7 +436,7 @@
 //         event::emit(TransferEvent {
 //             from: sale.creator,
 //             to: buyer,
-//             id: nft_id, // NFT ID
+//             id: nft_id,
 //             amount: 1,
 //             royalty: 0,
 //             asset_id
@@ -438,13 +450,10 @@
 //     event::emit(NFTPurchased<CURRENCY> {
 //         sale_id: object::uid_to_inner(&sale.id),
 //         buyer,
-//         nft_ids: vector::empty<ID>(), // Replace with actual ID vector if needed
+//         nft_ids: vector::empty<ID>(),
 //         amount_paid: total_cost
 //     });
 // }
-
-
-
 
 
 // // Add more NFTs to an existing sale with enhanced debug events

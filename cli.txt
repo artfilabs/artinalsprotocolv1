@@ -1,5 +1,6 @@
  sui move build
- sui client publish --gas-budget 1000000000 --skip-dependency-verification
+ //0.5 Sui
+sui client publish --gas-budget 500000000
  
  
  # mint_token:
@@ -102,4 +103,5 @@ sui client call \
 
 upgrade:
 
-sui client upgrade --upgrade-capability 0x032554d61d310663dfe62fc3a64b5698e91d06bd7f5f7248346bee66f0840956 --gas-budget 1000000000 --skip-dependency-verification
+sui client upgrade --upgrade-capability 0xbe834ee2903a5e0a5521fdb6aef28f4327260885082080e5a41aa626565dc6ce --gas-budget 500000000
+sui keytool convert --mnemonic "turtle method fury enact combine fresh apart arrange about describe decide siren" --output-format hex

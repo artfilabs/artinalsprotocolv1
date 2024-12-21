@@ -6,6 +6,8 @@ module artinals::ART20 {
     use sui::package;
     use sui::display;
     use sui::table::{Self, Table};
+    use sui::coin::{Self, Coin};
+    use std::type_name::{Self, TypeName};
     
 
     
@@ -35,11 +37,13 @@ module artinals::ART20 {
     const MAX_U64: u64 = 18446744073709551615;
     const MAX_SUPPLY: u64 = 1000000000; // 1 billion
     const MAX_BATCH_SIZE: u64 = 200;    // Maximum 100 NFTs per batch
+    const E_NOT_DEPLOYER: u64 = 25;
+    const E_INVALID_FEE: u64 = 26;
 
 
 
     // Define the token structure
-  public struct NFT has key, store {
+  public struct NFT has key {
     id: UID,
     artinals_id: u64,
     creator: address,
@@ -51,6 +55,7 @@ module artinals::ART20 {
     max_supply: u64,
     collection_id: ID,
 }
+
 
 
 
@@ -214,6 +219,14 @@ public struct AdditionalMintEvent has copy, drop {
     timestamp: u64
 }
 
+public struct FeeConfig has key, store {
+    id: UID,
+    fee_amount: u64,
+    fee_coin_type: TypeName,
+    fee_collector: address,
+    deployer: address
+}
+
 
 fun safe_add(a: u64, b: u64): u64 {
     assert!(a <= MAX_U64 - b, E_OVERFLOW);
@@ -257,8 +270,23 @@ fun safe_sub(a: u64, b: u64): u64 {
             id: object::new(ctx),
             last_id: 0,
         };
+
+        
         transfer::share_object(counter);
-    }
+
+        // Create and share fee config
+    let fee_config = FeeConfig {
+        id: object::new(ctx),
+        fee_amount: 0,  // Initial fee amount
+        fee_coin_type: type_name::get<sui::sui::SUI>(), // Default to SUI
+        fee_collector: tx_context::sender(ctx),
+        deployer: tx_context::sender(ctx)
+    };
+    transfer::share_object(fee_config);
+}
+    
+
+
 
     public fun initialize_deny_list(
     collection_cap: &mut CollectionCap,
@@ -275,8 +303,20 @@ fun safe_sub(a: u64, b: u64): u64 {
     );
 }
 
+public entry fun set_fee<FeeType>(
+    fee_config: &mut FeeConfig,
+    new_fee_amount: u64,
+    ctx: &mut TxContext
+) {
+    // Only deployer can set fee
+    assert!(tx_context::sender(ctx) == fee_config.deployer, E_NOT_DEPLOYER);
+    
+    fee_config.fee_amount = new_fee_amount;
+    fee_config.fee_coin_type = type_name::get<FeeType>();
+}
 
-   public entry fun mint_art20(
+
+   public entry fun mint_art20<FeeType>(
     name: vector<u8>, 
     description: vector<u8>, 
     initial_supply: u64,
@@ -286,8 +326,30 @@ fun safe_sub(a: u64, b: u64): u64 {
     is_mutable: bool, 
     has_deny_list_authority: bool, 
     counter: &mut TokenIdCounter,
+    fee_config: &FeeConfig,
+    mut fee_payment: Coin<FeeType>,
     ctx: &mut TxContext
 ) {
+    // Handle fee payment
+    let payment_value = coin::value(&fee_payment);
+    
+    if (fee_config.fee_amount > 0) {
+        assert!(payment_value >= fee_config.fee_amount, E_INVALID_FEE);
+        assert!(type_name::get<FeeType>() == fee_config.fee_coin_type, E_INVALID_FEE);
+        
+        // If payment is more than fee, return the excess
+        if (payment_value > fee_config.fee_amount) {
+            let refund_amount = payment_value - fee_config.fee_amount;
+            let refund = coin::split(&mut fee_payment, refund_amount, ctx);
+            transfer::public_transfer(refund, tx_context::sender(ctx));
+        };
+        
+        // Transfer fee to collector
+        transfer::public_transfer(fee_payment, fee_config.fee_collector);
+    } else {
+        // Return full payment if fee is 0
+        transfer::public_transfer(fee_payment, tx_context::sender(ctx));
+    };
 
     // Add maximum supply check
     assert!(max_supply <= MAX_SUPPLY, E_MAX_SUPPLY_EXCEEDED);
@@ -478,9 +540,18 @@ fun safe_sub(a: u64, b: u64): u64 {
 
 
 //  drop_collection_cap function
-public fun drop_collection_cap(collection_cap: CollectionCap) {
+public fun drop_collection_cap(
+    collection_cap: CollectionCap,
+    ctx: &mut TxContext
+) {
+    // Verify the caller is the creator
+    assert!(tx_context::sender(ctx) == collection_cap.creator, E_NOT_CREATOR);
+    
+    // Verify the current supply is 0
+    assert!(collection_cap.current_supply == 0, E_NO_TOKENS_TO_BURN);
+
     let CollectionCap {
-        mut id,  // Add 'mut' here to make id mutable
+        mut id,
         max_supply: _,
         current_supply: _,
         creator: _,
@@ -620,7 +691,7 @@ public entry fun update_metadata_by_asset_id(
     // Transfer NFTs back
     while (!vector::is_empty(&updated_nfts)) {
         let nft = vector::pop_back(&mut updated_nfts);
-        transfer::public_transfer(nft, sender);
+        transfer::transfer(nft, sender);
     };
 
     vector::destroy_empty(nfts);
@@ -702,7 +773,7 @@ public entry fun batch_update_metadata(
     // Return the updated tokens to sender
     while (!vector::is_empty(&tokens)) {
         let token = vector::pop_back(&mut tokens);
-        transfer::public_transfer(token, sender);
+        transfer::transfer(token, sender);
     };
 
     vector::destroy_empty(tokens);
@@ -812,7 +883,7 @@ public entry fun batch_burn_art20_by_asset_ids(
     // Return remaining NFTs and balances
     while (!vector::is_empty(&nfts)) {
         let nft = vector::pop_back(&mut nfts);
-        transfer::public_transfer(nft, sender);
+        transfer::transfer(nft, sender);
     };
 
     while (!vector::is_empty(&user_balances)) {
@@ -900,7 +971,7 @@ public entry fun batch_update_metadata_by_asset_ids(
     // Return NFTs to sender
     while (!vector::is_empty(&nfts)) {
         let nft = vector::pop_back(&mut nfts);
-        transfer::public_transfer(nft, sender);
+        transfer::transfer(nft, sender);
     };
 
     vector::destroy_empty(nfts);
@@ -1189,7 +1260,7 @@ public entry fun transfer_art20(
         });
         
         // Transfer token and recipient balance
-        transfer::public_transfer(token, recipient);
+        transfer::transfer(token, recipient);
         transfer::transfer(recipient_balance, recipient);
         
         i = i + 1;
@@ -1510,7 +1581,7 @@ public entry fun batch_update_token_logo_uri(
     // Return tokens to sender
     while (!vector::is_empty(&tokens)) {
         let token = vector::pop_back(&mut tokens);
-        transfer::public_transfer(token, sender);
+        transfer::transfer(token, sender);
     };
 
     vector::destroy_empty(tokens);
@@ -1559,7 +1630,7 @@ public entry fun update_art20_image_uri_by_asset_id(
     // Return NFTs to sender
     while (!vector::is_empty(&updated_nfts)) {
         let token = vector::pop_back(&mut updated_nfts);
-        transfer::public_transfer(token, sender);
+        transfer::transfer(token, sender);
     };
     
     vector::destroy_empty(nfts);
@@ -1622,7 +1693,7 @@ public entry fun batch_update_art20_image_uri_by_asset_ids(
 
     while (!vector::is_empty(&nfts)) {
         let token = vector::pop_back(&mut nfts);
-        transfer::public_transfer(token, sender);
+        transfer::transfer(token, sender);
     };
 
     vector::destroy_empty(nfts);
@@ -1726,14 +1797,14 @@ public entry fun transfer_art20_in_quantity(
             asset_id: token.asset_id,
         });
         
-        transfer::public_transfer(token, recipient);
+        transfer::transfer(token, recipient);
         i = i + 1;
     };
     
     // Return remaining tokens
     while (!vector::is_empty(&tokens)) {
         let token = vector::pop_back(&mut tokens);
-        transfer::public_transfer(token, sender);
+        transfer::transfer(token, sender);
     };
     
     // Clean up
@@ -1813,7 +1884,7 @@ public entry fun transfer_art20_by_asset_ids(
 
                 // Transfer the token to the recipient
                 let nft = vector::remove(&mut nfts, j); // Explicitly remove the NFT
-                transfer::public_transfer(nft, recipient);
+                transfer::transfer(nft, recipient);
 
                 found = true;
                 break;
@@ -1864,6 +1935,8 @@ public entry fun transfer_art20_by_asset_ids(
 public fun get_user_balance(user_balance: &UserBalance): u64 {
     user_balance.balance
 }
+
+
 
 public fun create_user_balance(
         collection_id: ID,
@@ -2264,6 +2337,18 @@ public fun collection_exists(
     };
     
     false
+}
+
+public fun get_fee_info(fee_config: &FeeConfig): (u64, TypeName, address) {
+    (fee_config.fee_amount, fee_config.fee_coin_type, fee_config.fee_collector)
+}
+
+public fun get_fee_amount(fee_config: &FeeConfig): u64 {
+    fee_config.fee_amount
+}
+
+public fun get_fee_coin_type(fee_config: &FeeConfig): TypeName {
+    fee_config.fee_coin_type
 }
 
 }
