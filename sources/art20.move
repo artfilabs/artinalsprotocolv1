@@ -158,7 +158,6 @@ public struct CollectionCreatedEvent has copy, drop {
     public struct BurnEvent has copy, drop {
         owner: address,
         id: ID,
-        amount: u64,
     }
 
     public struct MetadataUpdateEvent has copy, drop {
@@ -937,7 +936,7 @@ public entry fun batch_burn_art20_by_asset_ids(
                 event::emit(BurnEvent {
                     owner: sender,
                     id: object::uid_to_inner(&nft.id),
-                    amount: 1,
+                   
                 });
 
                 let NFT { 
@@ -1372,7 +1371,7 @@ public entry fun burn_art20(
     event::emit(BurnEvent {
         owner: sender,
         id: object::uid_to_inner(&token.id),
-        amount: 1,
+        
     });
     
     let NFT { 
@@ -1534,7 +1533,7 @@ fun burn_single_art20(
     event::emit(BurnEvent {
         owner: sender,
         id: object::uid_to_inner(&token.id),
-        amount: 1,
+      
     });
     
     let NFT { 
