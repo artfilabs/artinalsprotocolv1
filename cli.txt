@@ -6,12 +6,12 @@ sui client publish --gas-budget 500000000
  # mint_token:
 
 sui client call \
---package 0x6fed99e9ef7cfab980ea60539dccb12db1bfd639ee5e8c40245fab9fba34b3df \
+--package 0xb077c30c744460b49ee37e2cb03b128c6677df8ad85d900f3e279454718a2060 \
 --module ART20 \
---function mint_token \
+--function mint_art20 \
 --args "TestToken" "This is a test NFT token." \ 25 50 \
 "https://akrd.net/_fcQKwSNjB7GL2fr_hdvdkv-RP_74abG9BO9DTig9bM" "https://amaranth-many-armadillo-855.mypinata.cloud/ipfs/QmS9eZM5nXaEyM7uie3az7xvmmmU6BzJ6suYEZPaFB1QWg" true true \
-0x2cf0c2c233dcb73f4c13f7c98f2edc84b293e25425822266131622d8d9266a92 \
+0x13156042144ec976a27b224eb4052221ab68d06f4ee9314cad23f0dcc596293b \
 --gas-budget 100000000
 
 mint additional:
@@ -24,6 +24,16 @@ sui client call --package 0x0886ff037a5ca8e32159b3bd5c311baa7d34821685c3d5ffa6ab
            0x4b68a04aca6d4389735bbaf6067b0cd645129565581039b329148cac432d822f \
     --gas-budget 100000000
 
+
+
+#Set Fee
+sui client call --package 0xde0cb879e90c012623586df7376d00d3b50f18fae6626ac019fc9edb21bfdfe7 \
+    --module ART20 \
+    --function set_fee \
+    --type-args 0xa6bb9e053fd0d03afa99945c35a40953e0b30f986d451be005a860fcd171d60e::artfi::ARTFI \
+    --args 0xabf15e6bd163ded912b1774bb104bbb34c9ff4b7654ee2ecb544959397a90993 \
+           10000000000 \
+    --gas-budget 100000000
 
 # Command for Tranfer_token
 
@@ -90,7 +100,7 @@ sui client call \
 #purchase"
 
 sui client call \
-    --package 0xb1c3adb5646538467eef4785b6abf24f13ebc66b9f9e0fa925280491894e8692 \
+    --package 0xb077c30c744460b49ee37e2cb03b128c6677df8ad85d900f3e279454718a2060 \
     --module SALE \
     --function purchase_nfts \
     --type-args "0xbf8491acb9867831f343a205083dc6fb88bd918d737d828f6cabe55da4e7e22a::my_coin::MY_COIN" \
@@ -103,5 +113,5 @@ sui client call \
 
 upgrade:
 
-sui client upgrade --upgrade-capability 0xbe834ee2903a5e0a5521fdb6aef28f4327260885082080e5a41aa626565dc6ce --gas-budget 500000000
+sui client upgrade --upgrade-capability 0xcfa9f917cb94ea4e88847dc9639f21dbae4301c27da10389fe0362284290901c --gas-budget 500000000
 sui keytool convert --mnemonic "turtle method fury enact combine fresh apart arrange about describe decide siren" --output-format hex
