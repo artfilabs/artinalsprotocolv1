@@ -74,6 +74,12 @@ const E_CATEGORY_ALREADY_EXISTS: u64 = 31;
     // One-Time-Witness for the module
     public struct ART20 has drop {}
 
+
+    public struct AdminCap has key, store {
+        id: UID,
+        owner: address
+    }
+
     public struct DenyListStatusEvent has copy, drop {
     collection_id: ID,
     address: address,
@@ -302,6 +308,21 @@ fun safe_sub(a: u64, b: u64): u64 {
         
         transfer::share_object(counter);
 
+        // Create and share the CategoryRegistry
+    let category_registry = CategoryRegistry {
+        id: object::new(ctx),
+        categories: table::new<String, Category>(ctx),
+        admin: tx_context::sender(ctx) // Set admin to deployer
+    };
+    transfer::share_object(category_registry);
+
+    let admin_cap = AdminCap {
+            id: object::new(ctx),
+            owner: tx_context::sender(ctx)
+        };
+        transfer::transfer(admin_cap, tx_context::sender(ctx));
+    
+
         
 
         // Create and share fee config
@@ -313,7 +334,11 @@ fun safe_sub(a: u64, b: u64): u64 {
         deployer: tx_context::sender(ctx)
     };
     transfer::share_object(fee_config);
+
+
 }
+
+
     
 
 
@@ -344,6 +369,16 @@ public entry fun set_fee<FeeType>(
     fee_config.fee_amount = new_fee_amount;
     fee_config.fee_coin_type = type_name::get<FeeType>();
 }
+
+
+public entry fun transfer_admin_cap(
+        admin_cap: &mut AdminCap,
+        new_owner: address,
+        ctx: &mut TxContext
+    ) {
+        assert!(tx_context::sender(ctx) == admin_cap.owner, E_NOT_DEPLOYER);
+        admin_cap.owner = new_owner;
+    }
 
 
    public entry fun mint_art20<FeeType>(
@@ -2559,5 +2594,9 @@ public fun get_fee_amount(fee_config: &FeeConfig): u64 {
 public fun get_fee_coin_type(fee_config: &FeeConfig): TypeName {
     fee_config.fee_coin_type
 }
+
+public fun verify_admin(admin_cap: &AdminCap, addr: address): bool {
+        admin_cap.owner == addr
+    }
 
 }
