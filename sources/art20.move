@@ -38,6 +38,10 @@ module artinals::ART20 {
     const E_DUPLICATE_ASSET_ID: u64 = 26;
     const E_NOT_MINTABLE: u64 = 27;
     const E_INSUFFICIENT_TOKENS: u64 = 28;
+    const E_INVALID_CATEGORY: u64 = 29;
+const E_CATEGORY_NOT_FOUND: u64 = 30;
+const E_CATEGORY_ALREADY_EXISTS: u64 = 31;
+    
 
     // Add maximum limits
     const MAX_U64: u64 = 18446744073709551615;
@@ -61,6 +65,7 @@ module artinals::ART20 {
     asset_id: u64,
     max_supply: u64,
     collection_id: ID,
+    category: String,
 }
 
 
@@ -196,6 +201,9 @@ public struct BatchTransferEvent has copy, drop {
 }
 
 
+
+
+
 public struct CollectionMintEvent has copy, drop {
     collection_id: ID,
     amount: u64,
@@ -221,6 +229,31 @@ public struct FeeConfig has key, store {
     fee_collector: address,
     deployer: address
 }
+
+
+public struct CategoryRegistry has key {
+    id: UID,
+    categories: Table<String, Category>,
+    admin: address
+}
+
+public struct Category has store {
+    name: String,
+    description: String,
+    is_active: bool,
+    created_at: u64
+}
+
+
+public struct CategoryCreated has copy, drop {
+    name: String,
+    description: String,
+    timestamp: u64
+}
+
+
+
+public struct CategoryKey has copy, drop, store {}
 
 
 fun safe_add(a: u64, b: u64): u64 {
@@ -268,6 +301,8 @@ fun safe_sub(a: u64, b: u64): u64 {
 
         
         transfer::share_object(counter);
+
+        
 
         // Create and share fee config
     let fee_config = FeeConfig {
@@ -318,6 +353,8 @@ public entry fun set_fee<FeeType>(
     max_supply: u64,
     uri: vector<u8>, 
     logo_uri: vector<u8>, 
+    category: String, // New parameter
+    registry: &CategoryRegistry, // New parameter
     is_mutable: bool, 
     has_deny_list_authority: bool, 
     counter: &mut TokenIdCounter,
@@ -326,8 +363,13 @@ public entry fun set_fee<FeeType>(
     clock: &Clock,
     ctx: &mut TxContext
 ) {
+
+     // Validate category exists and is active
+    assert!(table::contains(&registry.categories, category), E_CATEGORY_NOT_FOUND);
+    let cat = table::borrow(&registry.categories, category);
+    assert!(cat.is_active, E_INVALID_CATEGORY);
     // Add batch size validation first
-    assert!(initial_supply > 0, E_INVALID_BATCH_SIZE);
+    assert!(initial_supply >= 0, E_INVALID_BATCH_SIZE);
     assert!(initial_supply <= MAX_INITIAL_MINT, E_MAX_BATCH_SIZE_EXCEEDED);
 
     // Handle fee payment
@@ -433,6 +475,7 @@ public entry fun set_fee<FeeType>(
             asset_id: i + 1,
             max_supply,
             collection_id,
+            category: category, // Ensure category is bound correctly
         };
 
         event::emit(NFTMintedEvent {
@@ -493,7 +536,7 @@ public entry fun set_fee<FeeType>(
         counter.last_id = counter.last_id + 1;
         let artinals_id = counter.last_id;
 
-        let token = NFT {
+let token = NFT {
     id: object::new(ctx),
     artinals_id,
     creator: collection_cap.creator,
@@ -504,6 +547,7 @@ public entry fun set_fee<FeeType>(
     asset_id: collection_cap.current_supply + i + 1,
     max_supply: collection_cap.max_supply,
     collection_id,
+    category: string::utf8(b""),
 };
 
 
@@ -1026,7 +1070,8 @@ public entry fun batch_burn_art20_by_asset_ids(
                     logo_uri: _, 
                     asset_id: _, 
                     max_supply: _, 
-                    collection_id: _ 
+                    collection_id: _, 
+                    category: _ 
                 } = nft;
                 object::delete(id);
                 found = true;
@@ -1464,7 +1509,8 @@ public entry fun burn_art20(
         logo_uri: _, 
         asset_id: _, 
         max_supply: _, 
-        collection_id: _ 
+        collection_id: _, 
+        category: _,
     } = token;
     
     object::delete(id);
@@ -1601,32 +1647,59 @@ public entry fun set_collection_value_source(
 }
 
 
+public entry fun create_category(
+    registry: &mut CategoryRegistry,
+    name: String,
+    description: String,
+    clock: &Clock,
+    ctx: &mut TxContext
+) {
+    assert!(tx_context::sender(ctx) == registry.admin, E_NOT_CREATOR);
+    assert!(!table::contains(&registry.categories, name), E_CATEGORY_ALREADY_EXISTS);
+    
+    let category = Category {
+        name: name,
+        description: description,
+        is_active: true,
+        created_at: clock::timestamp_ms(clock)
+    };
+    
+    table::add(&mut registry.categories, name, category);
+    
+    event::emit(CategoryCreated {
+        name: name,
+        description: description,
+        timestamp: clock::timestamp_ms(clock)
+    });
+}
+
+
+
 fun burn_single_art20(
     token: NFT,
     collection_cap: &mut CollectionCap,
     ctx: &TxContext
 ) {
     let sender = tx_context::sender(ctx);
-    
     collection_cap.current_supply = safe_sub(collection_cap.current_supply, 1);
     
     event::emit(BurnEvent {
         owner: sender,
         id: object::uid_to_inner(&token.id),
-      
     });
     
     let NFT { 
         id, 
-        artinals_id: _, 
-        creator: _, 
-        name: _, 
-        description: _, 
-        uri: _, 
-        logo_uri: _, 
-        asset_id: _, 
-        max_supply: _, 
-        collection_id: _ 
+        artinals_id: _,
+        creator: _,
+        name: _,
+        description: _,
+        uri: _,
+        logo_uri: _,
+        asset_id: _,
+        max_supply: _,
+        collection_id: _,
+        category: _ // Added category field
     } = token;
     
     object::delete(id);
@@ -2228,6 +2301,18 @@ public fun get_collection_value_source(
     )
 }
 
+public fun get_all_categories(
+   registry: &CategoryRegistry
+): vector<String> {
+   let mut result = vector::empty<String>();
+   let categories = &registry.categories;
+   
+   let category_ref = table::borrow(categories, string::utf8(b""));
+   vector::push_back(&mut result, *&category_ref.name);
+   
+   result 
+}
+
 // Single asset ID lookup version
 public fun get_nft_by_asset_id(
     collection_cap: &CollectionCap,
@@ -2447,6 +2532,21 @@ public fun collection_exists(
     
     false
 }
+
+public fun get_category_info(
+    registry: &CategoryRegistry,
+    name: String
+): (String, String, bool, u64) {
+    let category = table::borrow(&registry.categories, name);
+    (
+        *&category.name,
+        *&category.description,
+        category.is_active,
+        category.created_at
+    )
+}
+
+
 
 public fun get_fee_info(fee_config: &FeeConfig): (u64, TypeName, address) {
     (fee_config.fee_amount, fee_config.fee_coin_type, fee_config.fee_collector)

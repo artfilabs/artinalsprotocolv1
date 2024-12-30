@@ -37,6 +37,11 @@ module artinals::ART20 {
     const E_INVALID_SUPPLY: u64 = 25;
     const E_DUPLICATE_ASSET_ID: u64 = 26;
     const E_NOT_MINTABLE: u64 = 27;
+    const E_INSUFFICIENT_TOKENS: u64 = 28;
+    const E_INVALID_CATEGORY: u64 = 29;
+const E_CATEGORY_NOT_FOUND: u64 = 30;
+const E_CATEGORY_ALREADY_EXISTS: u64 = 31;
+    
 
     // Add maximum limits
     const MAX_U64: u64 = 18446744073709551615;
@@ -44,6 +49,7 @@ module artinals::ART20 {
     const MAX_BATCH_SIZE: u64 = 200;    // Maximum 200 NFTs per batch
     const E_NOT_DEPLOYER: u64 = 25;
     const E_INVALID_FEE: u64 = 26;
+    const MAX_INITIAL_MINT: u64 = 1000;
 
 
 
@@ -59,6 +65,7 @@ module artinals::ART20 {
     asset_id: u64,
     max_supply: u64,
     collection_id: ID,
+    category: String,
 }
 
 
@@ -194,6 +201,9 @@ public struct BatchTransferEvent has copy, drop {
 }
 
 
+
+
+
 public struct CollectionMintEvent has copy, drop {
     collection_id: ID,
     amount: u64,
@@ -219,6 +229,31 @@ public struct FeeConfig has key, store {
     fee_collector: address,
     deployer: address
 }
+
+
+public struct CategoryRegistry has key {
+    id: UID,
+    categories: Table<String, Category>,
+    admin: address
+}
+
+public struct Category has store {
+    name: String,
+    description: String,
+    is_active: bool,
+    created_at: u64
+}
+
+
+public struct CategoryCreated has copy, drop {
+    name: String,
+    description: String,
+    timestamp: u64
+}
+
+
+
+public struct CategoryKey has copy, drop, store {}
 
 
 fun safe_add(a: u64, b: u64): u64 {
@@ -266,6 +301,8 @@ fun safe_sub(a: u64, b: u64): u64 {
 
         
         transfer::share_object(counter);
+
+        
 
         // Create and share fee config
     let fee_config = FeeConfig {
@@ -316,6 +353,8 @@ public entry fun set_fee<FeeType>(
     max_supply: u64,
     uri: vector<u8>, 
     logo_uri: vector<u8>, 
+    category: String, // New parameter
+    registry: &CategoryRegistry, // New parameter
     is_mutable: bool, 
     has_deny_list_authority: bool, 
     counter: &mut TokenIdCounter,
@@ -324,9 +363,14 @@ public entry fun set_fee<FeeType>(
     clock: &Clock,
     ctx: &mut TxContext
 ) {
+
+     // Validate category exists and is active
+    assert!(table::contains(&registry.categories, category), E_CATEGORY_NOT_FOUND);
+    let cat = table::borrow(&registry.categories, category);
+    assert!(cat.is_active, E_INVALID_CATEGORY);
     // Add batch size validation first
-    assert!(initial_supply > 0, E_INVALID_BATCH_SIZE);
-    assert!(initial_supply <= MAX_BATCH_SIZE, E_MAX_BATCH_SIZE_EXCEEDED);
+    assert!(initial_supply >= 0, E_INVALID_BATCH_SIZE);
+    assert!(initial_supply <= MAX_INITIAL_MINT, E_MAX_BATCH_SIZE_EXCEEDED);
 
     // Handle fee payment
     let payment_value = coin::value(&fee_payment);
@@ -431,6 +475,7 @@ public entry fun set_fee<FeeType>(
             asset_id: i + 1,
             max_supply,
             collection_id,
+            category: category, // Ensure category is bound correctly
         };
 
         event::emit(NFTMintedEvent {
@@ -491,7 +536,7 @@ public entry fun set_fee<FeeType>(
         counter.last_id = counter.last_id + 1;
         let artinals_id = counter.last_id;
 
-        let token = NFT {
+let token = NFT {
     id: object::new(ctx),
     artinals_id,
     creator: collection_cap.creator,
@@ -502,6 +547,7 @@ public entry fun set_fee<FeeType>(
     asset_id: collection_cap.current_supply + i + 1,
     max_supply: collection_cap.max_supply,
     collection_id,
+    category: string::utf8(b""),
 };
 
 
@@ -641,7 +687,7 @@ public entry fun update_metadata_by_object(
     });
 }
 
-#[allow(lint(self_transfer))]
+
 public entry fun update_metadata_by_asset_id(
     collection_cap: &CollectionCap,
     mut nfts: vector<NFT>,
@@ -654,19 +700,50 @@ public entry fun update_metadata_by_asset_id(
 ) {
     let sender = tx_context::sender(ctx);
     let collection_id = get_collection_cap_id(collection_cap);
-    let n = vector::length(&nfts);
+
+    // Validate metadata lengths before processing
+    // String length validations
+    if (option::is_some(&new_name)) {
+        let name = option::borrow(&new_name);
+        assert!(string::length(name) <= 128, E_INVALID_LENGTH);
+        let name_bytes = string::as_bytes(name);
+        assert!(vector::length(name_bytes) <= 128 * 4, E_INVALID_LENGTH);
+        assert!(vector::length(name_bytes) > 0, E_INVALID_LENGTH);
+    };
+
+    if (option::is_some(&new_description)) {
+        let description = option::borrow(&new_description);
+        assert!(string::length(description) <= 1000, E_INVALID_LENGTH);
+        let desc_bytes = string::as_bytes(description);
+        assert!(vector::length(desc_bytes) <= 1000 * 4, E_INVALID_LENGTH);
+        assert!(vector::length(desc_bytes) > 0, E_INVALID_LENGTH);
+    };
+    
+    // URI validations
+    if (option::is_some(&new_uri)) {
+        let uri = option::borrow(&new_uri);
+        assert!(vector::length(uri) <= 256, E_INVALID_LENGTH);
+        assert!(vector::length(uri) > 0, E_INVALID_LENGTH);
+    };
+
+    if (option::is_some(&new_logo_uri)) {
+        let logo_uri = option::borrow(&new_logo_uri);
+        assert!(vector::length(logo_uri) <= 256, E_INVALID_LENGTH);
+        assert!(vector::length(logo_uri) > 0, E_INVALID_LENGTH);
+    };
+
     let mut updated_nfts = vector::empty();
-    let mut i = 0;
     let mut found = false;
 
-    while (i < n) {
+    while (!vector::is_empty(&nfts) && !found) {  // Added !found condition
         let mut nft = vector::pop_back(&mut nfts);
-        if (!found && nft.collection_id == collection_id && nft.asset_id == asset_id) {
+        
+        if (nft.collection_id == collection_id && nft.asset_id == asset_id) {
             // Verify permissions
             assert!(collection_cap.is_mutable, E_TOKEN_NOT_MUTABLE);
             assert!(sender == nft.creator, E_NOT_CREATOR);
-            
 
+            // Update metadata fields
             if (option::is_some(&new_name)) {
                 nft.name = option::extract(&mut new_name);
             };
@@ -693,15 +770,18 @@ public entry fun update_metadata_by_asset_id(
         };
 
         vector::push_back(&mut updated_nfts, nft);
-        i = i + 1;
+    };
+
+    // Move remaining NFTs to updated_nfts without processing them
+    while (!vector::is_empty(&nfts)) {
+        vector::push_back(&mut updated_nfts, vector::pop_back(&mut nfts));
     };
 
     assert!(found, ASSET_ID_NOT_FOUND);
 
-    // Transfer NFTs back
+    // Return NFTs to sender
     while (!vector::is_empty(&updated_nfts)) {
-        let nft = vector::pop_back(&mut updated_nfts);
-        transfer::transfer(nft, sender);
+        transfer::transfer(vector::pop_back(&mut updated_nfts), sender);
     };
 
     vector::destroy_empty(nfts);
@@ -801,6 +881,39 @@ public entry fun batch_update_metadata_by_asset_ids(
     // Validate batch size
     assert!(asset_count > 0 && asset_count <= MAX_BATCH_SIZE, E_INVALID_BATCH_SIZE);
     
+    // Validate metadata lengths once before the loop
+    // String length validations
+    if (option::is_some(&new_name)) {
+        let name = option::borrow(&new_name);
+        assert!(string::length(name) <= 128, E_INVALID_LENGTH);
+        // Additional UTF-8 validation
+        let bytes = string::as_bytes(name);
+        assert!(vector::length(bytes) <= 128 * 4, E_INVALID_LENGTH); // Max 4 bytes per UTF-8 char
+        assert!(vector::length(bytes) > 0, E_INVALID_LENGTH); // Non-empty validation
+    };
+
+    if (option::is_some(&new_description)) {
+        let description = option::borrow(&new_description);
+        assert!(string::length(description) <= 1000, E_INVALID_LENGTH);
+        // Additional UTF-8 validation
+        let bytes = string::as_bytes(description);
+        assert!(vector::length(bytes) <= 1000 * 4, E_INVALID_LENGTH); // Max 4 bytes per UTF-8 char
+        assert!(vector::length(bytes) > 0, E_INVALID_LENGTH); // Non-empty validation
+    };
+    
+    // URI validations
+    if (option::is_some(&new_uri)) {
+        let uri = option::borrow(&new_uri);
+        assert!(vector::length(uri) <= 256, E_INVALID_LENGTH);
+        assert!(vector::length(uri) > 0, E_INVALID_LENGTH); // Non-empty validation
+    };
+
+    if (option::is_some(&new_logo_uri)) {
+        let logo_uri = option::borrow(&new_logo_uri);
+        assert!(vector::length(logo_uri) <= 256, E_INVALID_LENGTH);
+        assert!(vector::length(logo_uri) > 0, E_INVALID_LENGTH); // Non-empty validation
+    };
+    
     // Add duplicate check
     let mut processed_ids = table::new<u64, bool>(ctx);
 
@@ -823,18 +936,22 @@ public entry fun batch_update_metadata_by_asset_ids(
                 assert!(collection_cap.is_mutable, E_TOKEN_NOT_MUTABLE);
                 assert!(sender == nft.creator, E_NOT_CREATOR);
 
+                // Update name with validated value
                 if (option::is_some(&new_name)) {
                     nft.name = *option::borrow(&new_name);
                 };
 
+                // Update description with validated value
                 if (option::is_some(&new_description)) {
                     nft.description = *option::borrow(&new_description);
                 };
 
+                // Update URI with validated value
                 if (option::is_some(&new_uri)) {
                     nft.uri = url::new_unsafe_from_bytes(*option::borrow(&new_uri));
                 };
 
+                // Update logo URI with validated value
                 if (option::is_some(&new_logo_uri)) {
                     nft.logo_uri = url::new_unsafe_from_bytes(*option::borrow(&new_logo_uri));
                 };
@@ -850,6 +967,7 @@ public entry fun batch_update_metadata_by_asset_ids(
             vector::push_back(&mut updated_nfts, nft);
         };
 
+        // Restore NFTs from temporary vector
         while (!vector::is_empty(&updated_nfts)) {
             vector::push_back(&mut nfts, vector::pop_back(&mut updated_nfts));
         };
@@ -859,8 +977,10 @@ public entry fun batch_update_metadata_by_asset_ids(
         i = i + 1;
     };
 
+    // Clean up resources
     table::drop(processed_ids);
 
+    // Return the updated NFTs to sender
     while (!vector::is_empty(&nfts)) {
         let nft = vector::pop_back(&mut nfts);
         transfer::transfer(nft, sender);
@@ -868,6 +988,7 @@ public entry fun batch_update_metadata_by_asset_ids(
 
     vector::destroy_empty(nfts);
 }
+
 
 // Batch burn tokens by asset IDs
 public entry fun batch_burn_art20_by_asset_ids(
@@ -949,7 +1070,8 @@ public entry fun batch_burn_art20_by_asset_ids(
                     logo_uri: _, 
                     asset_id: _, 
                     max_supply: _, 
-                    collection_id: _ 
+                    collection_id: _, 
+                    category: _ 
                 } = nft;
                 object::delete(id);
                 found = true;
@@ -1325,14 +1447,17 @@ public entry fun burn_art20(
     assert!(sender == token.creator, E_NOT_OWNER);
     assert!(collection_cap.current_supply > 0, E_NO_TOKENS_TO_BURN);
     
-    // Find and update appropriate balance
+    // Add verification that token belongs to collection
+    assert!(token.collection_id == object::uid_to_inner(&collection_cap.id), E_COLLECTION_MISMATCH);
+    
     let mut balances_mut = user_balances;
     let mut found = false;
     let mut used_balances = vector::empty<UserBalance>();
     
     while (!vector::is_empty(&balances_mut)) {
         let mut balance = vector::pop_back(&mut balances_mut);
-        assert!(balance.collection_id == token.collection_id, 0);
+        // Verify balance belongs to collection
+        assert!(balance.collection_id == object::uid_to_inner(&collection_cap.id), E_COLLECTION_MISMATCH);
         
         if (!found && balance.balance > 0) {
             if (balance.balance == 1) {
@@ -1384,7 +1509,8 @@ public entry fun burn_art20(
         logo_uri: _, 
         asset_id: _, 
         max_supply: _, 
-        collection_id: _ 
+        collection_id: _, 
+        category: _,
     } = token;
     
     object::delete(id);
@@ -1521,32 +1647,59 @@ public entry fun set_collection_value_source(
 }
 
 
+public entry fun create_category(
+    registry: &mut CategoryRegistry,
+    name: String,
+    description: String,
+    clock: &Clock,
+    ctx: &mut TxContext
+) {
+    assert!(tx_context::sender(ctx) == registry.admin, E_NOT_CREATOR);
+    assert!(!table::contains(&registry.categories, name), E_CATEGORY_ALREADY_EXISTS);
+    
+    let category = Category {
+        name: name,
+        description: description,
+        is_active: true,
+        created_at: clock::timestamp_ms(clock)
+    };
+    
+    table::add(&mut registry.categories, name, category);
+    
+    event::emit(CategoryCreated {
+        name: name,
+        description: description,
+        timestamp: clock::timestamp_ms(clock)
+    });
+}
+
+
+
 fun burn_single_art20(
     token: NFT,
     collection_cap: &mut CollectionCap,
     ctx: &TxContext
 ) {
     let sender = tx_context::sender(ctx);
-    
     collection_cap.current_supply = safe_sub(collection_cap.current_supply, 1);
     
     event::emit(BurnEvent {
         owner: sender,
         id: object::uid_to_inner(&token.id),
-      
     });
     
     let NFT { 
         id, 
-        artinals_id: _, 
-        creator: _, 
-        name: _, 
-        description: _, 
-        uri: _, 
-        logo_uri: _, 
-        asset_id: _, 
-        max_supply: _, 
-        collection_id: _ 
+        artinals_id: _,
+        creator: _,
+        name: _,
+        description: _,
+        uri: _,
+        logo_uri: _,
+        asset_id: _,
+        max_supply: _,
+        collection_id: _,
+        category: _ // Added category field
     } = token;
     
     object::delete(id);
@@ -1737,11 +1890,12 @@ public entry fun transfer_art20_in_quantity(
     clock: &Clock,
     ctx: &mut TxContext
 ) {
+    assert!(quantity > 0, E_INVALID_BATCH_SIZE);
     let sender = tx_context::sender(ctx);
     validate_transfer(collection_cap, sender, recipient);
     
     let sender_nft_count = vector::length(&tokens);
-    assert!(sender_nft_count >= quantity, E_NO_TOKENS_TO_BURN);
+    assert!(sender_nft_count >= quantity, E_INSUFFICIENT_TOKENS);
     
     // Calculate total available balance
     let mut total_available = 0u64;
@@ -2147,6 +2301,18 @@ public fun get_collection_value_source(
     )
 }
 
+public fun get_all_categories(
+   registry: &CategoryRegistry
+): vector<String> {
+   let mut result = vector::empty<String>();
+   let categories = &registry.categories;
+   
+   let category_ref = table::borrow(categories, string::utf8(b""));
+   vector::push_back(&mut result, *&category_ref.name);
+   
+   result 
+}
+
 // Single asset ID lookup version
 public fun get_nft_by_asset_id(
     collection_cap: &CollectionCap,
@@ -2366,6 +2532,21 @@ public fun collection_exists(
     
     false
 }
+
+public fun get_category_info(
+    registry: &CategoryRegistry,
+    name: String
+): (String, String, bool, u64) {
+    let category = table::borrow(&registry.categories, name);
+    (
+        *&category.name,
+        *&category.description,
+        category.is_active,
+        category.created_at
+    )
+}
+
+
 
 public fun get_fee_info(fee_config: &FeeConfig): (u64, TypeName, address) {
     (fee_config.fee_amount, fee_config.fee_coin_type, fee_config.fee_collector)
