@@ -7,7 +7,7 @@ module artinals::SALE {
     use sui::coin::{Self, Coin};
 
     // Import types from ART20 module
-    use artinals::ART20::{NFT, CollectionCap, UserBalance};
+    use artinals::ART20::{NFT, CollectionCap, UserBalance, AdminCap};
 
 
     //Errors
@@ -32,6 +32,8 @@ module artinals::SALE {
     const ASSET_ID_NOT_FOUND: u64 = 26;
     const E_BALANCE_CREATION_FAILED: u64 = 27;
     const E_BALANCE_TRANSFER_FAILED: u64 = 28;
+    const E_NOT_ADMIN: u64 = 29;
+    
 
     // Add maximum limits
     const MAX_U64: u64 = 18446744073709551615;
@@ -203,6 +205,16 @@ fun safe_mul(a: u64, b: u64): u64 {
     assert!(a <= MAX_U64 / b, E_OVERFLOW);
     a * b
 }
+
+
+public entry fun verify_upgrade(
+        admin_cap: &AdminCap,
+        ctx: &mut TxContext
+    ) {
+        assert!(ART20::verify_admin(admin_cap, tx_context::sender(ctx)), E_NOT_ADMIN);
+       
+    }
+
 
     
 
