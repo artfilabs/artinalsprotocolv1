@@ -849,25 +849,17 @@ public entry fun update_metadata_by_asset_id(
 public entry fun batch_update_metadata(
     collection_cap: &CollectionCap,
     mut tokens: vector<NFT>,
-    new_name: Option<String>,          // Remove mut
-    new_description: Option<String>,    // Remove mut
-    new_uri: Option<vector<u8>>,       // Remove mut 
-    new_logo_uri: Option<vector<u8>>,  // Remove mut
+    new_name: Option<String>,          
+    new_description: Option<String>,    
+    new_uri: Option<vector<u8>>,       
+    new_logo_uri: Option<vector<u8>>,  
     ctx: &mut TxContext
 ) {
     let batch_size = vector::length(&tokens);
     let sender = tx_context::sender(ctx);
     let collection_id = get_collection_cap_id(collection_cap);
 
-    let mut i = 0;
-    while (i < batch_size) {
-        let token = vector::borrow_mut(&mut tokens, i);
-        assert!(token.collection_id == collection_id, E_COLLECTION_MISMATCH);
-        assert!(collection_cap.is_mutable, E_TOKEN_NOT_MUTABLE);
-        assert!(sender == token.creator, E_NOT_CREATOR);
-
-        // Update name if provided - use copy instead of extract
-        // Validate metadata lengths once before the loop
+    // Validate lengths first
     if (option::is_some(&new_name)) {
         assert!(string::length(option::borrow(&new_name)) <= 128, E_INVALID_LENGTH);
     };
@@ -880,6 +872,27 @@ public entry fun batch_update_metadata(
     if (option::is_some(&new_logo_uri)) {
         assert!(vector::length(option::borrow(&new_logo_uri)) <= 256, E_INVALID_LENGTH);
     };
+
+    let mut i = 0;
+    while (i < batch_size) {
+        let token = vector::borrow_mut(&mut tokens, i);
+        assert!(token.collection_id == collection_id, E_COLLECTION_MISMATCH);
+        assert!(collection_cap.is_mutable, E_TOKEN_NOT_MUTABLE);
+        assert!(sender == token.creator, E_NOT_CREATOR);
+
+        // Update fields if provided
+        if (option::is_some(&new_name)) {
+            token.name = *option::borrow(&new_name);
+        };
+        if (option::is_some(&new_description)) {
+            token.description = *option::borrow(&new_description);
+        };
+        if (option::is_some(&new_uri)) {
+            token.uri = url::new_unsafe_from_bytes(*option::borrow(&new_uri));
+        };
+        if (option::is_some(&new_logo_uri)) {
+            token.logo_uri = url::new_unsafe_from_bytes(*option::borrow(&new_logo_uri));
+        };
 
         event::emit(MetadataUpdateEvent {
             id: object::uid_to_inner(&token.id),
@@ -1413,15 +1426,15 @@ public entry fun transfer_art20(
         let mut balance_updated = false;
 let mut j = 0;
 while (j < vector::length(&sender_balances)) {
-    let balance = vector::borrow_mut(&mut sender_balances, j);
-    // Added collection verification
-    if (balance.balance > 0 && balance.collection_id == collection_id) {
-        balance.balance = safe_sub(balance.balance, 1);
-        balance_updated = true;
-        break
+        let balance = vector::borrow_mut(&mut sender_balances, j);
+        // Add collection verification before updating balance
+        if (balance.balance > 0 && balance.collection_id == collection_id) {
+            balance.balance = safe_sub(balance.balance, 1);
+            balance_updated = true;
+            break
+        };
+        j = j + 1;
     };
-    j = j + 1;
-};
         assert!(balance_updated, E_INSUFFICIENT_BALANCE);
         
         // Emit transfer event
@@ -1757,42 +1770,76 @@ public fun get_max_supply(item: &NFT): u64 {
 public entry fun batch_update_token_logo_uri(
     mut tokens: vector<NFT>,
     new_logo_uris: vector<vector<u8>>,
-    collection_cap: &CollectionCap, // Added parameter
+    collection_cap: &CollectionCap,
     ctx: &mut TxContext
 ) {
     let sender = tx_context::sender(ctx);
+    let collection_id = get_collection_cap_id(collection_cap);
     let n = vector::length(&tokens);
     
-    // Check collection mutability
+    // Basic validations
     assert!(collection_cap.is_mutable, E_TOKEN_NOT_MUTABLE);
-    
     assert!(n == vector::length(&new_logo_uris), E_MISMATCH_TOKENS_AND_URIS);
+    assert!(n > 0 && n <= MAX_BATCH_SIZE, E_INVALID_BATCH_SIZE);
+    
+    // Add deny list check
+    check_deny_list_restrictions(collection_cap, sender);
 
+    // Validate all logo URIs lengths and structure first
+    let mut i = 0;
+    while (i < vector::length(&new_logo_uris)) {
+        let logo_uri = vector::borrow(&new_logo_uris, i);
+        // URI length validation
+        assert!(vector::length(logo_uri) <= 256, E_INVALID_LENGTH);
+        assert!(vector::length(logo_uri) > 0, E_INVALID_LENGTH);
+
+        // Validate URI is valid bytes that can be converted to URL
+        let _test_url = url::new_unsafe_from_bytes(*logo_uri);
+        i = i + 1;
+    };
+
+    let mut updated_nfts = vector::empty<NFT>();
     let mut i = 0;
     while (i < n) {
-        let token = vector::borrow_mut(&mut tokens, i);
-        let new_logo_uri = *vector::borrow(&new_logo_uris, i);
-
-        assert!(sender == token.creator, E_NOT_CREATOR);
+        let mut token = vector::pop_back(&mut tokens);
         
+        // Verify token belongs to collection
+        assert!(token.collection_id == collection_id, E_COLLECTION_MISMATCH);
+        // Verify ownership/creator
+        assert!(sender == token.creator, E_NOT_CREATOR);
+
+        // Get corresponding logo URI
+        let new_logo_uri = *vector::borrow(&new_logo_uris, i);
+        
+        // Update logo URI
         token.logo_uri = url::new_unsafe_from_bytes(new_logo_uri);
 
+        // Emit update event
         event::emit(LogoURIUpdateEvent {
             id: object::uid_to_inner(&token.id),
             artinals_id: token.artinals_id,
             new_logo_uri: token.logo_uri,
         });
 
+        vector::push_back(&mut updated_nfts, token);
         i = i + 1;
     };
 
-    // Return tokens to sender
+    // Return remaining unprocessed tokens
     while (!vector::is_empty(&tokens)) {
         let token = vector::pop_back(&mut tokens);
+        vector::push_back(&mut updated_nfts, token);
+    };
+
+    // Return all tokens to sender
+    while (!vector::is_empty(&updated_nfts)) {
+        let token = vector::pop_back(&mut updated_nfts);
         transfer::transfer(token, sender);
     };
 
+    // Clean up vectors
     vector::destroy_empty(tokens);
+    vector::destroy_empty(updated_nfts);
 }
 
 // Single NFT logo URI update
@@ -1806,8 +1853,18 @@ public entry fun update_art20_image_uri_by_asset_id(
     let sender = tx_context::sender(ctx);
     let collection_id = get_collection_cap_id(collection_cap);
     
-    // Check collection mutability
+    // Basic validations
     assert!(collection_cap.is_mutable, E_TOKEN_NOT_MUTABLE);
+    
+    // Add deny list check
+    check_deny_list_restrictions(collection_cap, sender);
+
+    // URI length validation
+    assert!(vector::length(&new_logo_uri) <= 256, E_INVALID_LENGTH);
+    assert!(vector::length(&new_logo_uri) > 0, E_INVALID_LENGTH);
+
+    // Validate URI is valid bytes that can be converted to URL
+    let _test_url = url::new_unsafe_from_bytes(new_logo_uri);
     
     let mut updated_nfts = vector::empty<NFT>();
     let nft_count = vector::length(&nfts);
@@ -1817,6 +1874,7 @@ public entry fun update_art20_image_uri_by_asset_id(
     while (i < nft_count) {
         let mut token = vector::pop_back(&mut nfts);
         
+        // Verify token belongs to collection and matches asset_id
         if (token.collection_id == collection_id && token.asset_id == asset_id && !found) {
             assert!(sender == token.creator, E_NOT_CREATOR);
             token.logo_uri = url::new_unsafe_from_bytes(new_logo_uri);
@@ -1856,11 +1914,26 @@ public entry fun batch_update_art20_image_uri_by_asset_ids(
     let sender = tx_context::sender(ctx);
     let collection_id = get_collection_cap_id(collection_cap);
     
+    // Basic validations
     assert!(collection_cap.is_mutable, E_TOKEN_NOT_MUTABLE);
+    
+    // Add deny list check
+    check_deny_list_restrictions(collection_cap, sender);
     
     let asset_count = vector::length(&asset_ids);
     assert!(asset_count == vector::length(&new_logo_uris), E_MISMATCH_TOKENS_AND_URIS);
     assert!(asset_count > 0 && asset_count <= MAX_BATCH_SIZE, E_INVALID_BATCH_SIZE);
+
+    // Validate all logo URIs lengths first
+    let mut i = 0;
+    while (i < vector::length(&new_logo_uris)) {
+        let logo_uri = vector::borrow(&new_logo_uris, i);
+        assert!(vector::length(logo_uri) <= 256, E_INVALID_LENGTH);
+        assert!(vector::length(logo_uri) > 0, E_INVALID_LENGTH);
+        // Validate URI format
+        let _test_url = url::new_unsafe_from_bytes(*logo_uri);
+        i = i + 1;
+    };
 
     // Add duplicate check
     let mut processed_ids = table::new<u64, bool>(ctx);
@@ -1896,6 +1969,7 @@ public entry fun batch_update_art20_image_uri_by_asset_ids(
             vector::push_back(&mut updated_nfts, nft);
         };
 
+        // Restore NFTs from temporary vector
         while (!vector::is_empty(&updated_nfts)) {
             vector::push_back(&mut nfts, vector::pop_back(&mut updated_nfts));
         };
@@ -1905,8 +1979,10 @@ public entry fun batch_update_art20_image_uri_by_asset_ids(
         i = i + 1;
     };
 
+    // Clean up resources
     table::drop(processed_ids);
 
+    // Return NFTs to sender
     while (!vector::is_empty(&nfts)) {
         let nft = vector::pop_back(&mut nfts);
         transfer::transfer(nft, sender);
@@ -1928,6 +2004,7 @@ public entry fun transfer_art20_in_quantity(
     assert!(quantity > 0, E_INVALID_BATCH_SIZE);
     let sender = tx_context::sender(ctx);
     validate_transfer(collection_cap, sender, recipient);
+    let collection_id = object::uid_to_inner(&collection_cap.id);
     
     let sender_nft_count = vector::length(&tokens);
     assert!(sender_nft_count >= quantity, E_INSUFFICIENT_TOKENS);
@@ -1958,7 +2035,7 @@ public entry fun transfer_art20_in_quantity(
     
     while (remaining_quantity > 0) {
         let mut balance = vector::pop_back(&mut sender_balances_mut);
-        
+        assert!(balance.collection_id == collection_id, E_COLLECTION_MISMATCH);
         if (balance.balance <= remaining_quantity) {
             // Use entire balance
             remaining_quantity = remaining_quantity - balance.balance;
@@ -1975,6 +2052,7 @@ public entry fun transfer_art20_in_quantity(
     // Return remaining balances
     while (!vector::is_empty(&sender_balances_mut)) {
         let balance = vector::pop_back(&mut sender_balances_mut);
+        assert!(balance.collection_id == collection_id, E_COLLECTION_MISMATCH);
         vector::push_back(&mut used_balances, balance);
     };
     
@@ -2050,6 +2128,9 @@ public entry fun transfer_art20_by_asset_ids(
     let sender = tx_context::sender(ctx);
     let collection_id = get_collection_cap_id(collection_cap);
     let asset_count = vector::length(&asset_ids);
+
+    // Use validate_transfer to check both addresses
+    validate_transfer(collection_cap, sender, recipient);
 
     // Validate recipient is not in the deny list
     check_deny_list_restrictions(collection_cap, recipient);
