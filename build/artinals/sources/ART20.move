@@ -6,7 +6,6 @@ module artinals::ART20 {
     use sui::package;
     use sui::display;
     use sui::table::{Self, Table};
-    use sui::coin::{Self, Coin};
     use std::type_name::{Self, TypeName};
     use sui::clock::{Self, Clock};
     
@@ -39,16 +38,16 @@ module artinals::ART20 {
     const E_NOT_MINTABLE: u64 = 27;
     const E_INSUFFICIENT_TOKENS: u64 = 28;
     const E_INVALID_CATEGORY: u64 = 29;
-const E_CATEGORY_NOT_FOUND: u64 = 30;
-const E_CATEGORY_ALREADY_EXISTS: u64 = 31;
+    const E_CATEGORY_NOT_FOUND: u64 = 30;
+    const E_CATEGORY_ALREADY_EXISTS: u64 = 31;
+    const E_CURRENT_SUPPLY_NOT_ZERO:u64 = 32;
     
 
-    // Add maximum limits
+    // Maximum limits
     const MAX_U64: u64 = 18446744073709551615;
     const MAX_SUPPLY: u64 = 1000000000; // 1 billion
     const MAX_BATCH_SIZE: u64 = 200;    // Maximum 200 NFTs per batch
     const E_NOT_DEPLOYER: u64 = 25;
-    const E_INVALID_FEE: u64 = 26;
     const MAX_INITIAL_MINT: u64 = 1000;
 
 
@@ -381,52 +380,29 @@ public entry fun transfer_admin_cap(
     }
 
 
-   public entry fun mint_art20<FeeType>(
+   public entry fun mint_art20(
     name: vector<u8>, 
     description: vector<u8>, 
     initial_supply: u64,
     max_supply: u64,
     uri: vector<u8>, 
     logo_uri: vector<u8>, 
-    category: String, // New parameter
-    registry: &CategoryRegistry, // New parameter
+    category: String,
+    registry: &CategoryRegistry,
     is_mutable: bool, 
     has_deny_list_authority: bool, 
     counter: &mut TokenIdCounter,
-    fee_config: &FeeConfig,
-    mut fee_payment: Coin<FeeType>,
     clock: &Clock,
     ctx: &mut TxContext
 ) {
-
-     // Validate category exists and is active
+    // Validate category exists and is active
     assert!(table::contains(&registry.categories, category), E_CATEGORY_NOT_FOUND);
     let cat = table::borrow(&registry.categories, category);
     assert!(cat.is_active, E_INVALID_CATEGORY);
+
     // Add batch size validation first
     assert!(initial_supply >= 0, E_INVALID_BATCH_SIZE);
     assert!(initial_supply <= MAX_INITIAL_MINT, E_MAX_BATCH_SIZE_EXCEEDED);
-
-    // Handle fee payment
-    let payment_value = coin::value(&fee_payment);
-    
-    if (fee_config.fee_amount > 0) {
-        assert!(payment_value >= fee_config.fee_amount, E_INVALID_FEE);
-        assert!(type_name::get<FeeType>() == fee_config.fee_coin_type, E_INVALID_FEE);
-        
-        // If payment is more than fee, return the excess
-        if (payment_value > fee_config.fee_amount) {
-            let refund_amount = payment_value - fee_config.fee_amount;
-            let refund = coin::split(&mut fee_payment, refund_amount, ctx);
-            transfer::public_transfer(refund, tx_context::sender(ctx));
-        };
-        
-        // Transfer fee to collector
-        transfer::public_transfer(fee_payment, fee_config.fee_collector);
-    } else {
-        // Return full payment if fee is 0
-        transfer::public_transfer(fee_payment, tx_context::sender(ctx));
-    };
 
     // Supply validations with proper error codes
     assert!(max_supply <= MAX_SUPPLY, E_MAX_SUPPLY_EXCEEDED);
@@ -452,7 +428,6 @@ public entry fun transfer_admin_cap(
         is_api_source: false
     };
 
-    // Calculate collection_id once
     let collection_id = object::uid_to_inner(&collection_cap.id);
 
     // Emit collection creation event
@@ -491,7 +466,6 @@ public entry fun transfer_admin_cap(
         balance: initial_supply
     };
 
-    // Create vector to store tokens before batch transfer
     let mut tokens = vector::empty<NFT>();
 
     let mut i = 0;
@@ -510,7 +484,7 @@ public entry fun transfer_admin_cap(
             asset_id: i + 1,
             max_supply,
             collection_id,
-            category: category, // Ensure category is bound correctly
+            category: category,
         };
 
         event::emit(NFTMintedEvent {
@@ -529,24 +503,20 @@ public entry fun transfer_admin_cap(
             asset_id: token.asset_id,
         });
 
-        // Store token in vector
         vector::push_back(&mut tokens, token);
         i = i + 1;
     };
 
-    // Batch transfer all tokens using immutable reference for checking
     while (!vector::is_empty(&tokens)) {
         let token = vector::pop_back(&mut tokens);
         transfer::transfer(token, tx_context::sender(ctx));
     };
 
-    // Clean up
     vector::destroy_empty(tokens);
 
     transfer::share_object(collection_cap);
     transfer::transfer(user_balance, tx_context::sender(ctx));
 }
-
 
 
     // New function to mint additional tokens (only for mintable NFTs)
@@ -639,7 +609,7 @@ public fun drop_collection_cap(
     assert!(tx_context::sender(ctx) == collection_cap.creator, E_NOT_CREATOR);
     
     // Verify the current supply is 0
-    assert!(collection_cap.current_supply == 0, E_NO_TOKENS_TO_BURN);
+    assert!(collection_cap.current_supply == 0, E_CURRENT_SUPPLY_NOT_ZERO);
 
     let CollectionCap {
         mut id,

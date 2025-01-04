@@ -27,12 +27,12 @@ sui client call --package 0x0886ff037a5ca8e32159b3bd5c311baa7d34821685c3d5ffa6ab
 
 
 #Set Fee
-sui client call --package 0xde0cb879e90c012623586df7376d00d3b50f18fae6626ac019fc9edb21bfdfe7 \
+sui client call --package 0x7fb25a43d1edc218ed28024e1551b39b2b880fc50af32b5313ea756f6574ce1f \
     --module ART20 \
     --function set_fee \
     --type-args 0xa6bb9e053fd0d03afa99945c35a40953e0b30f986d451be005a860fcd171d60e::artfi::ARTFI \
-    --args 0xabf15e6bd163ded912b1774bb104bbb34c9ff4b7654ee2ecb544959397a90993 \
-           10000000000 \
+    --args 0x7d0e656637691959a022759e090fa36eee6b3347ff84673b49c69f9b03764fe3 \
+           0 \
     --gas-budget 100000000
 
 # Command for Tranfer_token

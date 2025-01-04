@@ -112,8 +112,8 @@ public struct NFTSale<phantom CURRENCY> has key, store {
     is_active: bool,
     nft_count: u64,  // Track number of NFTs instead of storing them directly
     asset_ids: vector<u64>,
-    artist_name: String,
-    artwork_title: String,
+    creator_name: String,
+    sale_title: String,
     width_cm: Option<u64>,     // Optional
     height_cm: Option<u64>,    // Optional
     creation_year: Option<u64>, // Optional
@@ -121,7 +121,7 @@ public struct NFTSale<phantom CURRENCY> has key, store {
     provenance: Option<String>, // Optional
     authenticity: Option<String>, // Optional
     signature: Option<String>,  // Optional
-    about_artwork: String,
+    about_sale: String,
 }
 
 
@@ -223,8 +223,8 @@ public entry fun create_nft_sale<CURRENCY>(
     mut nfts: vector<NFT>,
     nft_amount: u64,
     price_per_nft: u64,
-    artist_name: vector<u8>,
-    artwork_title: vector<u8>,
+    creator_name: vector<u8>,
+    sale_title: vector<u8>,
     width_cm: Option<u64>,
     height_cm: Option<u64>,
     creation_year: Option<u64>,
@@ -232,7 +232,7 @@ public entry fun create_nft_sale<CURRENCY>(
     provenance: Option<vector<u8>>,
     authenticity: Option<vector<u8>>,
     signature: Option<vector<u8>>,
-    about_artwork: vector<u8>,
+    about_sale: vector<u8>,
     collection_cap: &mut CollectionCap,
     mut sender_balances: vector<UserBalance>,
     ctx: &mut TxContext
@@ -277,8 +277,8 @@ public entry fun create_nft_sale<CURRENCY>(
         is_active: true,
         nft_count: nft_amount,
         asset_ids: vector::empty(),
-        artist_name: string::utf8(artist_name),
-        artwork_title: string::utf8(artwork_title),
+        creator_name: string::utf8(creator_name),
+        sale_title: string::utf8(sale_title),
         width_cm: width_cm,
         height_cm: height_cm,
         creation_year: creation_year,
@@ -302,7 +302,7 @@ public entry fun create_nft_sale<CURRENCY>(
         } else { 
             option::none() 
         },
-        about_artwork: string::utf8(about_artwork),
+        about_sale: string::utf8(about_sale),
     };
 
     let sale_id = object::uid_to_inner(&sale.id);
@@ -1231,12 +1231,12 @@ public fun is_sale_creator<CURRENCY>(sale: &NFTSale<CURRENCY>, addr: address): b
     sale.creator == addr
 }
 
-public fun get_artist_name<CURRENCY>(sale: &NFTSale<CURRENCY>): String {
-    sale.artist_name
+public fun get_creator_name<CURRENCY>(sale: &NFTSale<CURRENCY>): String {
+    sale.creator_name
 }
 
-public fun get_artwork_title<CURRENCY>(sale: &NFTSale<CURRENCY>): String {
-    sale.artwork_title
+public fun get_sale_title<CURRENCY>(sale: &NFTSale<CURRENCY>): String {
+    sale.sale_title
 }
 
 public fun get_dimensions<CURRENCY>(sale: &NFTSale<CURRENCY>): (Option<u64>, Option<u64>) {
@@ -1266,8 +1266,8 @@ public fun get_authenticity<CURRENCY>(sale: &NFTSale<CURRENCY>): Option<String> 
 public fun get_signature<CURRENCY>(sale: &NFTSale<CURRENCY>): Option<String> {
     sale.signature
 }
-public fun get_about_artwork<CURRENCY>(sale: &NFTSale<CURRENCY>): String {
-    sale.about_artwork
+public fun get_about_sale<CURRENCY>(sale: &NFTSale<CURRENCY>): String {
+    sale.about_sale
 }
 
 fun remove_asset_id_from_vector(asset_ids: &mut vector<u64>, asset_id: u64) {
