@@ -27,11 +27,11 @@ sui client call --package 0x0886ff037a5ca8e32159b3bd5c311baa7d34821685c3d5ffa6ab
 
 
 #Set Fee
-sui client call --package 0x7fb25a43d1edc218ed28024e1551b39b2b880fc50af32b5313ea756f6574ce1f \
+sui client call --package 0x00fa96270090750dabb1c16a0fffef96e1df341ac7cab5ee08f4da36cbe5dc96 \
     --module ART20 \
     --function set_fee \
-    --type-args 0xa6bb9e053fd0d03afa99945c35a40953e0b30f986d451be005a860fcd171d60e::artfi::ARTFI \
-    --args 0x7d0e656637691959a022759e090fa36eee6b3347ff84673b49c69f9b03764fe3 \
+    --type-args 0x706fa7723231e13e8d37dad56da55c027f3163094aa31c867ca254ba0e0dc79f::artfi::ARTFI \
+    --args 0x89d0624f27f600870707b1c60eb5ff1a5acb1e81d22e9b790c489007c3e9bbe7 \
            0 \
     --gas-budget 100000000
 
@@ -113,5 +113,19 @@ sui client call \
 
 upgrade:
 
-sui client upgrade --upgrade-capability 0xcfa9f917cb94ea4e88847dc9639f21dbae4301c27da10389fe0362284290901c --gas-budget 500000000
+sui client upgrade --upgrade-capability 0xa8c94c65dd76d79aa026f0dfc5631c514cdfdac4c9d26a1a62b0cabd849f43af --gas-budget 500000000
 sui keytool convert --mnemonic "turtle method fury enact combine fresh apart arrange about describe decide siren" --output-format hex
+
+
+
+sui client call \
+    --package 0xa80e474f137ca2b264dd01e752053ca8277cdf3ccf4b9262c21a55d37d92823a \
+    --module ART20 \
+    --function mint_additional_art20 \
+    --args \
+        0x216741680977f593b5f94ded0b964f6ee13e9c195dd2fe08f8e306ce0c0764d0 \
+        1 \
+        0x9981cddcf2c9053dd0363ba0ae628a3741e3f1a8609142071be9d7698c3f9549 \
+        0x875e92b52f5f1b2dfd920b11e51d5d1135acc8272d0c026afc835ccea3f62b4e \
+        0x6 \
+    --gas-budget 100000000

@@ -6,6 +6,7 @@ module artinals::ART20 {
     use sui::package;
     use sui::display;
     use sui::table::{Self, Table};
+    use sui::coin::{Self, Coin};
     use std::type_name::{Self, TypeName};
     use sui::clock::{Self, Clock};
     
@@ -48,6 +49,7 @@ module artinals::ART20 {
     const MAX_SUPPLY: u64 = 1000000000; // 1 billion
     const MAX_BATCH_SIZE: u64 = 200;    // Maximum 200 NFTs per batch
     const E_NOT_DEPLOYER: u64 = 25;
+    const E_INVALID_FEE: u64 = 26;
     const MAX_INITIAL_MINT: u64 = 1000;
 
 
@@ -380,7 +382,7 @@ public entry fun transfer_admin_cap(
     }
 
 
-   public entry fun mint_art20(
+   public entry fun mint_art20<FeeType>(
     name: vector<u8>, 
     description: vector<u8>, 
     initial_supply: u64,
@@ -392,6 +394,8 @@ public entry fun transfer_admin_cap(
     is_mutable: bool, 
     has_deny_list_authority: bool, 
     counter: &mut TokenIdCounter,
+    fee_config: &FeeConfig,
+    mut fee_payment: Coin<FeeType>,
     clock: &Clock,
     ctx: &mut TxContext
 ) {
@@ -403,6 +407,28 @@ public entry fun transfer_admin_cap(
     // Add batch size validation first
     assert!(initial_supply >= 0, E_INVALID_BATCH_SIZE);
     assert!(initial_supply <= MAX_INITIAL_MINT, E_MAX_BATCH_SIZE_EXCEEDED);
+
+    // Handle fee payment
+    let payment_value = coin::value(&fee_payment);
+    
+    if (fee_config.fee_amount > 0) {
+        // Only validate payment if fee is non-zero
+        assert!(payment_value >= fee_config.fee_amount, E_INVALID_FEE);
+        assert!(type_name::get<FeeType>() == fee_config.fee_coin_type, E_INVALID_FEE);
+        
+        // If payment is more than fee, return the excess
+        if (payment_value > fee_config.fee_amount) {
+            let refund_amount = payment_value - fee_config.fee_amount;
+            let refund = coin::split(&mut fee_payment, refund_amount, ctx);
+            transfer::public_transfer(refund, tx_context::sender(ctx));
+        };
+        
+        // Transfer fee to collector
+        transfer::public_transfer(fee_payment, fee_config.fee_collector);
+    } else {
+        // If fee is 0, return the full payment amount without any checks
+        transfer::public_transfer(fee_payment, tx_context::sender(ctx));
+    };
 
     // Supply validations with proper error codes
     assert!(max_supply <= MAX_SUPPLY, E_MAX_SUPPLY_EXCEEDED);
@@ -428,6 +454,7 @@ public entry fun transfer_admin_cap(
         is_api_source: false
     };
 
+    // Calculate collection_id once
     let collection_id = object::uid_to_inner(&collection_cap.id);
 
     // Emit collection creation event
@@ -466,6 +493,7 @@ public entry fun transfer_admin_cap(
         balance: initial_supply
     };
 
+    // Create vector to store tokens before batch transfer
     let mut tokens = vector::empty<NFT>();
 
     let mut i = 0;
@@ -507,11 +535,13 @@ public entry fun transfer_admin_cap(
         i = i + 1;
     };
 
+    // Batch transfer all tokens
     while (!vector::is_empty(&tokens)) {
         let token = vector::pop_back(&mut tokens);
         transfer::transfer(token, tx_context::sender(ctx));
     };
 
+    // Clean up
     vector::destroy_empty(tokens);
 
     transfer::share_object(collection_cap);
@@ -519,42 +549,73 @@ public entry fun transfer_admin_cap(
 }
 
 
+
     // New function to mint additional tokens (only for mintable NFTs)
    public entry fun mint_additional_art20(
     collection_cap: &mut CollectionCap,
     amount: u64,
     counter: &mut TokenIdCounter,
-    user_balance: &mut UserBalance,
+    mut user_balances: vector<UserBalance>,
     clock: &Clock,
     ctx: &mut TxContext
 ) {
-    assert!(collection_cap.is_mintable, E_NOT_MINTABLE);
-    assert!(tx_context::sender(ctx) == collection_cap.creator, 2);
-    assert!(collection_cap.max_supply == 0 || collection_cap.current_supply + amount <= collection_cap.max_supply, 2);
-    assert!(user_balance.collection_id == object::uid_to_inner(&collection_cap.id), 0);
+    assert!(collection_cap.is_mutable, E_NOT_MINTABLE);
+    assert!(tx_context::sender(ctx) == collection_cap.creator, E_NOT_CREATOR);
+    assert!(collection_cap.max_supply == 0 || collection_cap.current_supply + amount <= collection_cap.max_supply, E_MAX_SUPPLY_EXCEEDED);
     
-    user_balance.balance = user_balance.balance + amount;
     let collection_id = object::uid_to_inner(&collection_cap.id);
+    let sender = tx_context::sender(ctx);
+    
+    // Create new user balance if no balances exist
+    if (vector::is_empty(&user_balances)) {
+        let new_balance = UserBalance {
+            id: object::new(ctx),
+            collection_id,
+            balance: amount
+        };
+        transfer::transfer(new_balance, sender);
+    } else {
+        // Update existing balance or create new one if all are empty
+        let mut balance_updated = false;
+        let mut i = 0;
+        while (i < vector::length(&user_balances)) {
+            let balance = vector::borrow_mut(&mut user_balances, i);
+            if (balance.collection_id == collection_id) {
+                balance.balance = balance.balance + amount;
+                balance_updated = true;
+                break
+            };
+            i = i + 1;
+        };
+
+        if (!balance_updated) {
+            let new_balance = UserBalance {
+                id: object::new(ctx),
+                collection_id,
+                balance: amount
+            };
+            transfer::transfer(new_balance, sender);
+        };
+    };
 
     let mut i = 0;
     while (i < amount) {
         counter.last_id = counter.last_id + 1;
         let artinals_id = counter.last_id;
 
-let token = NFT {
-    id: object::new(ctx),
-    artinals_id,
-    creator: collection_cap.creator,
-    name: collection_cap.name,
-    description: collection_cap.description,
-    uri: collection_cap.uri,
-    logo_uri: collection_cap.logo_uri,
-    asset_id: collection_cap.current_supply + i + 1,
-    max_supply: collection_cap.max_supply,
-    collection_id,
-    category: string::utf8(b""),
-};
-
+        let token = NFT {
+            id: object::new(ctx),
+            artinals_id,
+            creator: collection_cap.creator,
+            name: collection_cap.name,
+            description: collection_cap.description,
+            uri: collection_cap.uri,
+            logo_uri: collection_cap.logo_uri,
+            asset_id: collection_cap.current_supply + i + 1,
+            max_supply: collection_cap.max_supply,
+            collection_id,
+            category: string::utf8(b""),
+        };
 
         event::emit(TransferEvent {
             from: tx_context::sender(ctx),
@@ -577,6 +638,18 @@ let token = NFT {
     };
 
     collection_cap.current_supply = collection_cap.current_supply + amount;
+
+    // Return remaining balances to sender
+    while (!vector::is_empty(&user_balances)) {
+        let balance = vector::pop_back(&mut user_balances);
+        if (balance.balance > 0) {
+            transfer::transfer(balance, sender);
+        } else {
+            cleanup_empty_balance(balance);
+        };
+    };
+
+    vector::destroy_empty(user_balances);
 
     // Emit additional mint event
     event::emit(AdditionalMintEvent {
@@ -1461,17 +1534,18 @@ public entry fun burn_art20(
     user_balances: vector<UserBalance>,
     ctx: &mut TxContext
 ) {
-    let sender = tx_context::sender(ctx);
-    assert!(sender == token.creator, E_NOT_OWNER);
+    // Remove creator check since we want to allow anyone with balance to burn
     assert!(collection_cap.current_supply > 0, E_NO_TOKENS_TO_BURN);
     
     // Add verification that token belongs to collection
     assert!(token.collection_id == object::uid_to_inner(&collection_cap.id), E_COLLECTION_MISMATCH);
     
+    let sender = tx_context::sender(ctx);
     let mut balances_mut = user_balances;
     let mut found = false;
     let mut used_balances = vector::empty<UserBalance>();
     
+    // Process user balances
     while (!vector::is_empty(&balances_mut)) {
         let mut balance = vector::pop_back(&mut balances_mut);
         // Verify balance belongs to collection
@@ -1514,7 +1588,6 @@ public entry fun burn_art20(
     event::emit(BurnEvent {
         owner: sender,
         id: object::uid_to_inner(&token.id),
-        
     });
     
     let NFT { 

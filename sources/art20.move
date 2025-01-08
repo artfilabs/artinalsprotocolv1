@@ -555,37 +555,67 @@ public entry fun transfer_admin_cap(
     collection_cap: &mut CollectionCap,
     amount: u64,
     counter: &mut TokenIdCounter,
-    user_balance: &mut UserBalance,
+    mut user_balances: vector<UserBalance>,
     clock: &Clock,
     ctx: &mut TxContext
 ) {
-    assert!(collection_cap.is_mintable, E_NOT_MINTABLE);
-    assert!(tx_context::sender(ctx) == collection_cap.creator, 2);
-    assert!(collection_cap.max_supply == 0 || collection_cap.current_supply + amount <= collection_cap.max_supply, 2);
-    assert!(user_balance.collection_id == object::uid_to_inner(&collection_cap.id), 0);
+    assert!(collection_cap.is_mutable, E_NOT_MINTABLE);
+    assert!(tx_context::sender(ctx) == collection_cap.creator, E_NOT_CREATOR);
+    assert!(collection_cap.max_supply == 0 || collection_cap.current_supply + amount <= collection_cap.max_supply, E_MAX_SUPPLY_EXCEEDED);
     
-    user_balance.balance = user_balance.balance + amount;
     let collection_id = object::uid_to_inner(&collection_cap.id);
+    let sender = tx_context::sender(ctx);
+    
+    // Create new user balance if no balances exist
+    if (vector::is_empty(&user_balances)) {
+        let new_balance = UserBalance {
+            id: object::new(ctx),
+            collection_id,
+            balance: amount
+        };
+        transfer::transfer(new_balance, sender);
+    } else {
+        // Update existing balance or create new one if all are empty
+        let mut balance_updated = false;
+        let mut i = 0;
+        while (i < vector::length(&user_balances)) {
+            let balance = vector::borrow_mut(&mut user_balances, i);
+            if (balance.collection_id == collection_id) {
+                balance.balance = balance.balance + amount;
+                balance_updated = true;
+                break
+            };
+            i = i + 1;
+        };
+
+        if (!balance_updated) {
+            let new_balance = UserBalance {
+                id: object::new(ctx),
+                collection_id,
+                balance: amount
+            };
+            transfer::transfer(new_balance, sender);
+        };
+    };
 
     let mut i = 0;
     while (i < amount) {
         counter.last_id = counter.last_id + 1;
         let artinals_id = counter.last_id;
 
-let token = NFT {
-    id: object::new(ctx),
-    artinals_id,
-    creator: collection_cap.creator,
-    name: collection_cap.name,
-    description: collection_cap.description,
-    uri: collection_cap.uri,
-    logo_uri: collection_cap.logo_uri,
-    asset_id: collection_cap.current_supply + i + 1,
-    max_supply: collection_cap.max_supply,
-    collection_id,
-    category: string::utf8(b""),
-};
-
+        let token = NFT {
+            id: object::new(ctx),
+            artinals_id,
+            creator: collection_cap.creator,
+            name: collection_cap.name,
+            description: collection_cap.description,
+            uri: collection_cap.uri,
+            logo_uri: collection_cap.logo_uri,
+            asset_id: collection_cap.current_supply + i + 1,
+            max_supply: collection_cap.max_supply,
+            collection_id,
+            category: string::utf8(b""),
+        };
 
         event::emit(TransferEvent {
             from: tx_context::sender(ctx),
@@ -608,6 +638,18 @@ let token = NFT {
     };
 
     collection_cap.current_supply = collection_cap.current_supply + amount;
+
+    // Return remaining balances to sender
+    while (!vector::is_empty(&user_balances)) {
+        let balance = vector::pop_back(&mut user_balances);
+        if (balance.balance > 0) {
+            transfer::transfer(balance, sender);
+        } else {
+            cleanup_empty_balance(balance);
+        };
+    };
+
+    vector::destroy_empty(user_balances);
 
     // Emit additional mint event
     event::emit(AdditionalMintEvent {
@@ -1492,17 +1534,18 @@ public entry fun burn_art20(
     user_balances: vector<UserBalance>,
     ctx: &mut TxContext
 ) {
-    let sender = tx_context::sender(ctx);
-    assert!(sender == token.creator, E_NOT_OWNER);
+    // Remove creator check since we want to allow anyone with balance to burn
     assert!(collection_cap.current_supply > 0, E_NO_TOKENS_TO_BURN);
     
     // Add verification that token belongs to collection
     assert!(token.collection_id == object::uid_to_inner(&collection_cap.id), E_COLLECTION_MISMATCH);
     
+    let sender = tx_context::sender(ctx);
     let mut balances_mut = user_balances;
     let mut found = false;
     let mut used_balances = vector::empty<UserBalance>();
     
+    // Process user balances
     while (!vector::is_empty(&balances_mut)) {
         let mut balance = vector::pop_back(&mut balances_mut);
         // Verify balance belongs to collection
@@ -1545,7 +1588,6 @@ public entry fun burn_art20(
     event::emit(BurnEvent {
         owner: sender,
         id: object::uid_to_inner(&token.id),
-        
     });
     
     let NFT { 

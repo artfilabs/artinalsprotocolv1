@@ -33,6 +33,7 @@ module artinals::SALE {
     const E_BALANCE_CREATION_FAILED: u64 = 27;
     const E_BALANCE_TRANSFER_FAILED: u64 = 28;
     const E_NOT_ADMIN: u64 = 29;
+    const E_NO_TOKENS_TO_SELL: u64 = 30;
     
 
     // Add maximum limits
@@ -245,7 +246,7 @@ public entry fun create_nft_sale<CURRENCY>(
     assert!(nft_amount <= MAX_BATCH_SIZE, E_MAX_BATCH_SIZE_EXCEEDED);
 
     let nft_length = vector::length(&nfts);
-    assert!(nft_length >= nft_amount, E_NO_TOKENS_TO_BURN);
+    assert!(nft_length >= nft_amount, E_NO_TOKENS_TO_SELL);
 
     // Calculate total available balance
     let mut total_available = 0u64;
