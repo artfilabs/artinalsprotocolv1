@@ -27,11 +27,20 @@ sui client call --package 0x0886ff037a5ca8e32159b3bd5c311baa7d34821685c3d5ffa6ab
 
 
 #Set Fee
-sui client call --package 0x00fa96270090750dabb1c16a0fffef96e1df341ac7cab5ee08f4da36cbe5dc96 \
+sui client call --package 0x38dd22dce61c548260cad3cff942c7c28ca70f484cdc5d7ebcd7ca914623aba3 \
     --module ART20 \
     --function set_fee \
     --type-args 0x706fa7723231e13e8d37dad56da55c027f3163094aa31c867ca254ba0e0dc79f::artfi::ARTFI \
-    --args 0x89d0624f27f600870707b1c60eb5ff1a5acb1e81d22e9b790c489007c3e9bbe7 \
+    --args 0x9c779ad2aeb284884b2f1343960b73e17f0116654c721079ca1069ab23daf8c4 \
+           0 \
+    --gas-budget 100000000
+
+# Set fee (testnet)
+sui client call --package 0xc87901cc93f0cf6fd921e4e61817f2c3950df53b500176d3c1ad00849ef7584d \
+    --module ART20 \
+    --function set_fee \
+    --type-args 0xa6bb9e053fd0d03afa99945c35a40953e0b30f986d451be005a860fcd171d60e::artfi::ARTFI \
+    --args 0xa8ed1ddd5325f95b90aa4208f2647d579936ac70005da0e5161d7293838d4e39 \
            0 \
     --gas-budget 100000000
 
@@ -113,7 +122,13 @@ sui client call \
 
 upgrade:
 
-sui client upgrade --upgrade-capability 0xa8c94c65dd76d79aa026f0dfc5631c514cdfdac4c9d26a1a62b0cabd849f43af --gas-budget 500000000
+
+mainnet upgradeCap
+sui client upgrade --upgrade-capability 0x5ed4324383ac1d397b413a1def4ff4e86dfd386148d4b8657bf7b10e5c44bad3 --gas-budget 300000000
+
+# testnet upgradeCap
+sui client upgrade --upgrade-capability 0xd3cc9134261b0d3ea3ed5b46c948e0971d2b9c68353f19161bb9c96445944f3a --gas-budget 300000000
+
 sui keytool convert --mnemonic "turtle method fury enact combine fresh apart arrange about describe decide siren" --output-format hex
 
 
@@ -129,3 +144,7 @@ sui client call \
         0x875e92b52f5f1b2dfd920b11e51d5d1135acc8272d0c026afc835ccea3f62b4e \
         0x6 \
     --gas-budget 100000000
+
+
+    sui client new-address ed25519
+    cat ~/.sui/sui_config/sui.keystore
