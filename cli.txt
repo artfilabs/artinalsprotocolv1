@@ -127,7 +127,7 @@ mainnet upgradeCap
 sui client upgrade --upgrade-capability 0x5ed4324383ac1d397b413a1def4ff4e86dfd386148d4b8657bf7b10e5c44bad3 --gas-budget 300000000
 
 # testnet upgradeCap
-sui client upgrade --upgrade-capability 0xd3cc9134261b0d3ea3ed5b46c948e0971d2b9c68353f19161bb9c96445944f3a --gas-budget 300000000
+sui client upgrade --upgrade-capability 0xef07e7b6861e3a3d956c5d998ffe666e0b17b91e4005de5aa9decca0f3eec781 --gas-budget 300000000
 
 sui keytool convert --mnemonic "turtle method fury enact combine fresh apart arrange about describe decide siren" --output-format hex
 

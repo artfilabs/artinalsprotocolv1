@@ -2279,7 +2279,7 @@ public fun get_user_balance(user_balance: &UserBalance): u64 {
 
 
 
-public(package) fun create_user_balance(
+public fun create_user_balance(
     collection_id: ID,
     balance: u64,
     ctx: &mut TxContext
