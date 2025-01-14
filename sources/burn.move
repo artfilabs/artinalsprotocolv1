@@ -1,14 +1,11 @@
 module artinals::BURN {
     
     use sui::event;
- 
-    use sui::clock::{Self, Clock};
     use sui::balance::{Self, Balance};
     use sui::coin::{Self, Coin};
-    use sui::dynamic_field::{Self};
     use artinals::ART20::{Self, NFT, CollectionCap, UserBalance};
-    
-   
+    use sui::bcs;
+    use sui::dynamic_field as df;
 
     // Error constants
     const E_NOT_CREATOR: u64 = 1;
@@ -21,15 +18,10 @@ module artinals::BURN {
     // const E_CURRENT_SUPPLY_NOT_ZERO: u64 = 8;
     // const E_COLLECTION_MISMATCH: u64 = 9;
     const E_ZERO_DELAY: u64 = 10;
-    const E_CLAIM_DELAY_NOT_MET: u64 = 11;
-    
+    const E_CLAIM_TOO_SOON: u64 = 11;
 
     // Safe math max values
     const MAX_U64: u64 = 18446744073709551615;
-
-    public struct UserClaimInfoKey has copy, drop, store {
-        address: address
-    }
 
     // Structs
     public struct BurnPool<phantom REWARD> has key {
@@ -56,6 +48,13 @@ module artinals::BURN {
         collection_id: ID
     }
 
+    public struct ClaimTimeDebug has copy, drop {
+    current_time: u64,
+    last_claim: u64,
+    next_claim: u64,
+    claim_delay: u64,
+}
+
     public struct RewardClaimed<phantom REWARD> has copy, drop {
         burner: address,
         amount: u64,
@@ -67,8 +66,6 @@ module artinals::BURN {
         amount: u64,
         new_balance: u64
     }
-
-    
 
     public struct BalanceRemoved<phantom REWARD> has copy, drop {
         pool_id: ID,
@@ -87,43 +84,31 @@ module artinals::BURN {
     }
 
 
-  public struct UserClaimInfo has key, store {
-    id: UID,
-    pool_id: ID,
-    user: address,
-    last_claim: u64,
-    next_claim: u64
-}
-
-// Event for claim info creation
-public struct ClaimInfoCreated has copy, drop {
-    info_id: ID,
-    pool_id: ID,
-    user: address,
-    next_claim: u64
-}
-   
+    public struct UserClaimInfo has copy, drop, store {
+        last_claim: u64
+    }
 
     // Modified TimedBurnPool struct without the Table
     public struct TimedBurnPool<phantom REWARD> has key {
-    id: UID,
-    creator: address,
-    reward_balance: Balance<REWARD>,
-    reward_per_burn: u64,
-    total_burns: u64,
-    total_rewards_distributed: u64,
-    is_active: bool,
-    claim_delay: u64    // Keep original field name
-}
+        id: UID,
+        creator: address,
+        reward_balance: Balance<REWARD>,
+        reward_per_burn: u64,
+        total_burns: u64,
+        total_rewards_distributed: u64,
+        is_active: bool,
+        claim_delay: u64  // Time delay in milliseconds between claims
+        
+    }
 
     // Events
     public struct TimedPoolCreated<phantom REWARD> has copy, drop {
-    pool_id: ID,
-    creator: address,
-    initial_balance: u64,
-    reward_per_burn: u64,
-    claim_delay: u64    // Keep original field name
-}
+        pool_id: ID,
+        creator: address,
+        initial_balance: u64,
+        reward_per_burn: u64,
+        claim_delay: u64
+    }
 
 //     public struct DropPool<phantom REWARD> has key {
 //     id: UID,
@@ -370,146 +355,164 @@ public struct ClaimInfoCreated has copy, drop {
 
 
     public entry fun create_timed_burn_pool<REWARD>(
-    reward: &mut Coin<REWARD>,
-    amount: u64,
-    reward_per_burn: u64,
-    claim_delay: u64,    // Keep original parameter name
-    ctx: &mut TxContext
-) {
-    // Check available balance
-    let reward_balance = coin::value(reward);
-    assert!(reward_balance >= amount, E_INSUFFICIENT_BALANCE);
-    assert!(amount > 0, E_INSUFFICIENT_BALANCE);
-    assert!(reward_per_burn > 0, E_ZERO_REWARD);
-    assert!(claim_delay > 0, E_ZERO_DELAY);
+        reward: &mut Coin<REWARD>,
+        amount: u64,
+        reward_per_burn: u64,
+        claim_delay: u64,
+        ctx: &mut TxContext
+    ) {
+        // Check available balance
+        let reward_balance = coin::value(reward);
+        assert!(reward_balance >= amount, E_INSUFFICIENT_BALANCE);
+        assert!(amount > 0, E_INSUFFICIENT_BALANCE);
+        assert!(reward_per_burn > 0, E_ZERO_REWARD);
+        assert!(claim_delay > 0, E_ZERO_DELAY);
 
-    // Split the specified amount from the input coin
-    let pool_coin = coin::split(reward, amount, ctx);
+        // Split the specified amount from the input coin
+        let pool_coin = coin::split(reward, amount, ctx);
 
-    let pool = TimedBurnPool<REWARD> {
-        id: object::new(ctx),
-        creator: tx_context::sender(ctx),
-        reward_balance: coin::into_balance(pool_coin),
-        reward_per_burn,
-        total_burns: 0,
-        total_rewards_distributed: 0,
-        is_active: true,
-        claim_delay,    // Use original field name
-    };
-
-    let pool_id = object::uid_to_inner(&pool.id);
-
-    event::emit(TimedPoolCreated<REWARD> {
-        pool_id,
-        creator: tx_context::sender(ctx),
-        initial_balance: amount,
-        reward_per_burn,
-        claim_delay     // Use original field name
-    });
-
-    transfer::share_object(pool);
-}
-    
-
-
-
-// Main timed burn and claim function
-public entry fun timed_burn_and_claim<REWARD>(
-    pool: &mut TimedBurnPool<REWARD>,
-    nft: NFT,
-    collection_cap: &mut CollectionCap,
-    balance: UserBalance,
-    clock: &Clock,
-    ctx: &mut TxContext
-) {
-    // Initial verifications
-    assert!(pool.is_active, E_POOL_NOT_ACTIVE);
-    let sender = tx_context::sender(ctx);
-    let current_time = clock::timestamp_ms(clock);
-    let pool_id = object::uid_to_inner(&pool.id);
-
-    // Handle claim info and time verification
-    let key = UserClaimInfoKey { address: sender };
-    
-    if (!dynamic_field::exists_(&pool.id, key)) {
-        // First-time user - create and store new claim info
-        let new_claim_info = UserClaimInfo {
+        let pool = TimedBurnPool<REWARD> {
             id: object::new(ctx),
-            pool_id,
-            user: sender,
-            last_claim: current_time,
-            next_claim: current_time + pool.claim_delay
+            creator: tx_context::sender(ctx),
+            reward_balance: coin::into_balance(pool_coin),
+            reward_per_burn,
+            total_burns: 0,
+            total_rewards_distributed: 0,
+            is_active: true,
+            claim_delay,
         };
-        
-        event::emit(ClaimInfoCreated {
-            info_id: object::uid_to_inner(&new_claim_info.id),
+
+        let pool_id = object::uid_to_inner(&pool.id);
+
+        event::emit(TimedPoolCreated<REWARD> {
             pool_id,
-            user: sender,
-            next_claim: current_time + pool.claim_delay
+            creator: tx_context::sender(ctx),
+            initial_balance: amount,
+            reward_per_burn,
+            claim_delay
         });
 
-        dynamic_field::add(&mut pool.id, key, new_claim_info);
-    } else {
-        // Existing user - verify and update claim delay
-        let claim_info: &mut UserClaimInfo = dynamic_field::borrow_mut(&mut pool.id, key);
-        assert!(claim_info.user == sender, E_NOT_CREATOR);
-        assert!(current_time >= claim_info.next_claim, E_CLAIM_DELAY_NOT_MET);
-        
-        // Update claim timestamps
-        claim_info.last_claim = current_time;
-        claim_info.next_claim = current_time + pool.claim_delay;
-    };
-
-    // Verify sufficient reward balance
-    let reward_balance = balance::value(&pool.reward_balance);
-    assert!(reward_balance >= pool.reward_per_burn, E_INSUFFICIENT_REWARD_BALANCE);
-
-    // Get NFT details and create reward
-    let nft_id = ART20::get_nft_id(&nft);
-    let collection_id = ART20::get_nft_collection_id(&nft);
-    let reward = coin::from_balance(
-        balance::split(&mut pool.reward_balance, pool.reward_per_burn),
-        ctx
-    );
-
-    // Update pool stats
-    pool.total_burns = safe_add(pool.total_burns, 1);
-    pool.total_rewards_distributed = safe_add(
-        pool.total_rewards_distributed,
-        pool.reward_per_burn
-    );
-
-    // Emit events
-    event::emit(NFTBurned {
-        burner: sender,
-        nft_id,
-        collection_id
-    });
-
-    event::emit(RewardClaimed<REWARD> {
-        burner: sender,
-        amount: pool.reward_per_burn,
-        pool_id
-    });
-
-    // Transfer reward and burn NFT
-    transfer::public_transfer(reward, sender);
-    ART20::burn_art20(nft, collection_cap, vector[balance], ctx);
-}
-
-// Helper function to check time until next claim
-public fun get_time_to_next_claim(
-    claim_info: &UserClaimInfo,
-    clock: &Clock
-): u64 {
-    let current_time = clock::timestamp_ms(clock);
-    if (current_time >= claim_info.next_claim) {
-        0
-    } else {
-        claim_info.next_claim - current_time
+        transfer::share_object(pool);
     }
-}
-  
+
+    
+
+    // Helper function to get claim info field name for an address
+    fun get_claim_field_name(addr: address): vector<u8> {
+        let mut field_name = b"claim_";
+        vector::append(&mut field_name, bcs::to_bytes(&addr));
+        field_name
+    }
+
+    // Burn NFT and claim reward with time restriction using dynamic fields
+    public entry fun timed_burn_and_claim<REWARD>(
+        pool: &mut TimedBurnPool<REWARD>,
+        nft: NFT,
+        collection_cap: &mut CollectionCap,
+        balance: UserBalance,
+        ctx: &mut TxContext
+    ) {
+        // Verify pool is active
+        assert!(pool.is_active, E_POOL_NOT_ACTIVE);
+
+        let sender = tx_context::sender(ctx);
+        let current_time = tx_context::epoch_timestamp_ms(ctx);
+        let field_name = get_claim_field_name(sender);
+        
+        // Check last claim time using dynamic fields
+        let last_claim = if (df::exists_(&pool.id, field_name)) {
+            let claim_info = df::borrow<vector<u8>, UserClaimInfo>(&pool.id, field_name);
+            claim_info.last_claim
+        } else {
+            0
+        };
+
+        let next_possible_claim = last_claim + pool.claim_delay;
+
+        // Verify enough time has passed since last claim
+        assert!(current_time >= next_possible_claim, E_CLAIM_TOO_SOON);
+
+        // Verify sufficient reward balance
+        let reward_balance = balance::value(&pool.reward_balance);
+        assert!(reward_balance >= pool.reward_per_burn, E_INSUFFICIENT_REWARD_BALANCE);
+
+        // Get NFT details before burning
+        let nft_id = ART20::get_nft_id(&nft);
+        let collection_id = ART20::get_nft_collection_id(&nft);
+
+        // Create reward coin
+        let reward = coin::from_balance(
+            balance::split(&mut pool.reward_balance, pool.reward_per_burn),
+            ctx
+        );
+
+        // Update pool stats safely
+        pool.total_burns = safe_add(pool.total_burns, 1);
+        pool.total_rewards_distributed = safe_add(
+            pool.total_rewards_distributed,
+            pool.reward_per_burn
+        );
+
+        // Update last claim timestamp using dynamic field
+        if (df::exists_(&pool.id, field_name)) {
+    // Get the existing claim info
+    let claim_info = df::borrow_mut<vector<u8>, UserClaimInfo>(&mut pool.id, field_name); 
+    // Update the last_claim field
+    claim_info.last_claim = current_time;
+} else {
+    df::add(&mut pool.id, field_name, UserClaimInfo { last_claim: current_time });
+};
+
+let debug_event = ClaimTimeDebug{
+    current_time: current_time,
+    last_claim: last_claim,
+    next_claim: next_possible_claim,
+    claim_delay: pool.claim_delay,
+};
+event::emit(debug_event);
+
+        // Emit events
+        event::emit(NFTBurned {
+            burner: sender,
+            nft_id,
+            collection_id
+        });
+
+        event::emit(RewardClaimed<REWARD> {
+            burner: sender,
+            amount: pool.reward_per_burn,
+            pool_id: object::uid_to_inner(&pool.id)
+        });
+
+        // Transfer reward to burner
+        transfer::public_transfer(reward, sender);
+
+        // Burn the NFT
+        ART20::burn_art20(nft, collection_cap, vector[balance], ctx);
+    }
+
+    // Get time until next possible claim
+    public fun get_time_to_next_claim<REWARD>(
+        pool: &TimedBurnPool<REWARD>,
+        wallet: address,
+        ctx: &TxContext
+    ): u64 {
+        let field_name = get_claim_field_name(wallet);
+        
+        if (!df::exists_(&pool.id, field_name)) {
+            return 0
+        };
+
+        let claim_info = df::borrow<vector<u8>, UserClaimInfo>(&pool.id, field_name);
+        let current_time = tx_context::epoch_timestamp_ms(ctx);
+        let next_claim_time = claim_info.last_claim + pool.claim_delay;
+        
+        if (current_time >= next_claim_time) {
+            0
+        } else {
+            next_claim_time - current_time
+        }
+    }
 
     // Add rewards to timed burn pool
     public entry fun add_timed_pool_rewards<REWARD>(
@@ -597,55 +600,55 @@ public fun get_time_to_next_claim(
 
     // Destroy timed pool and reclaim remaining balance
     public entry fun destroy_timed_pool<REWARD>(
-    pool: TimedBurnPool<REWARD>,
-    ctx: &mut TxContext
-) {
-    assert!(tx_context::sender(ctx) == pool.creator, E_NOT_CREATOR);
+        pool: TimedBurnPool<REWARD>,
+        ctx: &mut TxContext
+    ) {
+        assert!(tx_context::sender(ctx) == pool.creator, E_NOT_CREATOR);
 
-    let TimedBurnPool {
-        id,
-        creator: _,
-        reward_balance,
-        reward_per_burn: _,
-        total_burns: _,
-        total_rewards_distributed: _,
-        is_active: _,
-        claim_delay: _    // Keep original field name
-    } = pool;
+        let TimedBurnPool {
+            id,
+            creator: _,
+            reward_balance,
+            reward_per_burn: _,
+            total_burns: _,
+            total_rewards_distributed: _,
+            is_active: _,
+            claim_delay: _
+        } = pool;
 
-    let remaining_balance = balance::value(&reward_balance);
-    
-    event::emit(PoolDestroyed<REWARD> {
-        pool_id: object::uid_to_inner(&id),
-        remaining_balance
-    });
+        let remaining_balance = balance::value(&reward_balance);
+        
+        event::emit(PoolDestroyed<REWARD> {
+            pool_id: object::uid_to_inner(&id),
+            remaining_balance
+        });
 
-    // Return remaining balance to creator if any
-    if (remaining_balance > 0) {
-        transfer::public_transfer(
-            coin::from_balance(reward_balance, ctx),
-            tx_context::sender(ctx)
-        );
-    } else {
-        balance::destroy_zero(reward_balance);
-    };
+        // Return remaining balance to creator if any
+        if (remaining_balance > 0) {
+            transfer::public_transfer(
+                coin::from_balance(reward_balance, ctx),
+                tx_context::sender(ctx)
+            );
+        } else {
+            balance::destroy_zero(reward_balance);
+        };
 
-    object::delete(id);
-}
+        // Clean up any remaining dynamic fields before deleting the ID
+        object::delete(id);
+    }
 
-
-    // view function for timed pool
-   public fun get_timed_pool_info<REWARD>(pool: &TimedBurnPool<REWARD>): (address, u64, u64, u64, u64, bool, u64) {
-    (
-        pool.creator,
-        balance::value(&pool.reward_balance),
-        pool.reward_per_burn,
-        pool.total_burns,
-        pool.total_rewards_distributed,
-        pool.is_active,
-        pool.claim_delay    // Keep original field name
-    )
-}
+    // Add view function for timed pool
+    public fun get_timed_pool_info<REWARD>(pool: &TimedBurnPool<REWARD>): (address, u64, u64, u64, u64, bool, u64) {
+        (
+            pool.creator,
+            balance::value(&pool.reward_balance),
+            pool.reward_per_burn,
+            pool.total_burns,
+            pool.total_rewards_distributed,
+            pool.is_active,
+            pool.claim_delay
+        )
+    }
 
 
 //     public entry fun create_drop_pool<REWARD>(
