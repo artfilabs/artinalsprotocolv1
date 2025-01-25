@@ -2723,4 +2723,10 @@ public fun verify_admin(admin_cap: &AdminCap, addr: address): bool {
         admin_cap.owner == addr
     }
 
+public fun get_collection_creator(collection_cap: &CollectionCap): address {
+    collection_cap.creator
+}
+
+
+
 }
